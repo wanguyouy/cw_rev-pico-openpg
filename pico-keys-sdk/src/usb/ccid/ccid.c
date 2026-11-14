@@ -90,7 +90,9 @@ typedef struct {
     uint8_t apdu; //Actually it is an array
 }) ccid_header_t;
 
-uint8_t ccid_status = 1;
+/* Virtual card is always inserted: report ICC present from boot so GetSlotStatus
+ * agrees with the card-present notify (otherwise Usbccid sees absent -> REMOVED_CARD). */
+uint8_t ccid_status = 0;
 #ifndef ENABLE_EMULATION
 static uint8_t itf_num;
 static uint8_t wcid_event_data[USB_BUF_SIZE];
@@ -494,13 +496,14 @@ void ccid_task(void) {
     const uint32_t status_poll_interval_ms = 1;
     static uint32_t last_status_poll_ms[8] = {0};
     uint32_t now_ms = board_millis();
-    /* Re-assert card-present periodically: the single boot-time notify is missed
-     * if the host opens the interrupt pipe later, leaving Usbccid reporting no card. */
+    /* Heartbeat card-present on the interrupt pipe in case the boot notify was missed.
+     * bmSlotICCState=0x02: slot0 present, "changed" bit CLEAR — asserting change every
+     * second makes Usbccid re-power the card mid-connect (SCARD_W_UNRESPONSIVE_CARD). */
     static uint32_t last_notify_ms = 0;
     if (ccid_int_ep != 0 && now_ms - last_notify_ms >= 1000) {
         last_notify_ms = now_ms;
         if (!usbd_edpt_busy(0, ccid_int_ep)) {
-            static uint8_t notify_msg[2] = { 0x50, 0x03 };
+            static uint8_t notify_msg[2] = { 0x50, 0x02 };
 #if defined(PICO_PLATFORM)
             usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg));
 #elif defined(ESP_PLATFORM)
