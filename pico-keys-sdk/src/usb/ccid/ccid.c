@@ -223,7 +223,6 @@ static int driver_write_ccid(uint8_t itf, const_byte_array_t buffer) {
     uint32_t written = tud_vendor_n_write(itf, buffer.data, buffer_len);
     if (written > 0) {
         tud_vendor_n_write_flush(itf);
-
         ccid_tx[itf].r_ptr += (uint16_t)written;
         if (ccid_tx[itf].r_ptr >= ccid_tx[itf].w_ptr) {
             ccid_tx[itf].r_ptr = ccid_tx[itf].w_ptr = 0;
@@ -244,6 +243,187 @@ static int ccid_write_fast(uint8_t itf, const_byte_array_t buffer) {
  * Handles the raw (non-ISO7816) command stream CW_Programmer sends over CCID.
  * Returns the response length (payload + SW1SW2) written into resp, or 0 when
  * the buffer is not a CW Writer command (caller falls back to OpenPGP). */
+/* The host passes a 512-byte receive buffer, so the whole response
+ * (data + SW1SW2) must not exceed that. */
+#define CW_BLOCK_SIZE 510
+static uint8_t cw_big_out[10 + CW_BLOCK_SIZE + 2];
+static uint32_t cw_flash_addr;
+static uint8_t cw_flash[CW_BLOCK_SIZE];
+
+static uint16_t cw_read_block(uint8_t *resp) {
+    memset(cw_flash, 0xFF, sizeof(cw_flash));
+    memcpy(resp, cw_flash, CW_BLOCK_SIZE);
+    resp[CW_BLOCK_SIZE] = 0x90;
+    resp[CW_BLOCK_SIZE + 1] = 0x00;
+    return CW_BLOCK_SIZE + 2;
+}
+
+/* ---- CW32 ISP protocol (frames: 0x65 len body crc16/x25(lo,hi)) ---- */
+static uint32_t cw_isp_base;
+static uint8_t cw_isp_out[260];
+
+static uint16_t cw_crc16_x25(const uint8_t *p, uint16_t n) {
+    uint16_t crc = 0xFFFF;
+    while (n--) {
+        crc ^= *p++;
+        for (uint8_t i = 0; i < 8; i++)
+            crc = (crc & 1) ? (uint16_t)((crc >> 1) ^ 0x8408) : (uint16_t)(crc >> 1);
+    }
+    return (uint16_t)(crc ^ 0xFFFF);
+}
+
+/* Electronic signature area of a CW32F002F3P7 (TSSOP20). */
+static uint8_t cw_isp_sig_byte(uint32_t addr) {
+    static const char model[18] = "CW32F002F3P7";
+    static const uint8_t uid[17] = {0x34, 0x12, 0x56, 0x78, 0xA5, 0xFF, 0xFF, 0xFF,
+                                    0x34, 0x12, 0xFF, 0xFF, 0x78, 0x56, 0xFF, 0xFF, 0x9A};
+    if (addr >= 0x001007D0u && addr < 0x001007D0u + 18u)
+        return (uint8_t)model[addr - 0x001007D0u];
+    if (addr >= 0x0010084Cu && addr <= 0x0010085Cu)
+        return uid[addr - 0x0010084Cu];
+    switch (addr) {
+    case 0x001007E2: return 0x14; /* 20 pins */
+    case 0x001007E5: return 0x40; /* 16 KiB flash */
+    case 0x001007E9: return 0x0C; /* 3 KiB SRAM */
+    default: break;
+    }
+    if (addr >= 0x001007E2u && addr <= 0x001007EBu) return 0x00;
+    return 0xFF;
+}
+
+/* Simulated 16 KiB code flash, erased state 0xFF. */
+#define CW_FLASH_SIZE 16384
+static uint8_t cw_nor[CW_FLASH_SIZE];
+static uint8_t cw_nor_ready;
+
+static void cw_nor_ensure(void) {
+    if (!cw_nor_ready) {
+        memset(cw_nor, 0xFF, sizeof(cw_nor));
+        cw_nor_ready = 1;
+    }
+}
+
+static uint8_t cw_isp_mem_byte(uint32_t addr) {
+    if (addr < CW_FLASH_SIZE) {
+        cw_nor_ensure();
+        return cw_nor[addr];
+    }
+    return cw_isp_sig_byte(addr);
+}
+
+static uint16_t cw_crc16_x25_mem(uint32_t addr, uint16_t n) {
+    uint16_t crc = 0xFFFF;
+    while (n--) {
+        crc ^= cw_isp_mem_byte(addr++);
+        for (uint8_t i = 0; i < 8; i++)
+            crc = (crc & 1) ? (uint16_t)((crc >> 1) ^ 0x8408) : (uint16_t)(crc >> 1);
+    }
+    return (uint16_t)(crc ^ 0xFFFF);
+}
+
+static uint16_t cw_isp_handle(const uint8_t *frame, uint16_t len, uint8_t *resp) {
+    uint16_t olen;
+    if (len < 4 || frame[0] != 0x65) return 0;
+
+    {
+        uint8_t blen = frame[1];
+        const uint8_t *b = frame + 2;
+        if ((uint16_t)blen + 4u > len) {
+            cw_isp_out[0] = 0x80; /* CRC error */
+            olen = 1;
+        } else {
+            switch (b[0]) {
+            case 0x10: /* Query: ack + UCLK + BootloaderId + ChipName */
+                cw_isp_out[0] = 0x00;
+                cw_isp_out[1] = 24; cw_isp_out[2] = 0;
+                cw_isp_out[3] = 8;  cw_isp_out[4] = 0;
+                memcpy(cw_isp_out + 5, "CW32F002F3P7", 12);
+                olen = 17;
+                break;
+            case 0x11: /* PPS */
+                cw_isp_out[0] = 0x00;
+                olen = 1;
+                break;
+            case 0x20: /* SetBaseAddr: 0x20 0x00 0x00 addr[4] */
+                if (blen >= 7)
+                    cw_isp_base = (uint32_t)b[3] | ((uint32_t)b[4] << 8) |
+                                  ((uint32_t)b[5] << 16) | ((uint32_t)b[6] << 24);
+                cw_isp_out[0] = 0x00;
+                olen = 1;
+                break;
+            case 0x29: { /* ReadData: offset[2] cnt[1] */
+                uint16_t off = (uint16_t)b[1] | ((uint16_t)b[2] << 8);
+                uint8_t cnt = b[3];
+                uint32_t addr = cw_isp_base + off;
+                cw_isp_out[0] = 0x00;
+                for (uint8_t i = 0; i < cnt; i++)
+                    cw_isp_out[1 + i] = cw_isp_mem_byte(addr + i);
+                olen = (uint16_t)(1u + cnt);
+                break;
+            }
+            case 0x24: /* ChipErase */
+                cw_nor_ensure();
+                memset(cw_nor, 0xFF, sizeof(cw_nor));
+                cw_isp_out[0] = 0x00;
+                olen = 1;
+                break;
+            case 0x26: { /* SectorErase: offset[2], 512-byte page */
+                uint16_t off = (uint16_t)b[1] | ((uint16_t)b[2] << 8);
+                uint32_t addr = (cw_isp_base + off) & ~511u;
+                cw_nor_ensure();
+                for (uint32_t i = 0; i < 512; i++)
+                    if (addr + i < CW_FLASH_SIZE) cw_nor[addr + i] = 0xFF;
+                cw_isp_out[0] = 0x00;
+                olen = 1;
+                break;
+            }
+            case 0x28: { /* WriteData: offset[2] data[N] */
+                uint16_t off = (uint16_t)b[1] | ((uint16_t)b[2] << 8);
+                uint32_t addr = cw_isp_base + off;
+                uint16_t n = (blen > 3) ? (uint16_t)(blen - 3) : 0;
+                cw_nor_ensure();
+                for (uint16_t i = 0; i < n; i++)
+                    if (addr + i < CW_FLASH_SIZE) cw_nor[addr + i] = b[3 + i];
+                cw_isp_out[0] = 0x00;
+                olen = 1;
+                break;
+            }
+            case 0x30: /* SetFlashReadOutLevel: ack + RdLevel (0x55 = query) */
+                cw_isp_out[0] = 0x00;
+                cw_isp_out[1] = (blen >= 2 && b[1] != 0x55) ? b[1] : 0x00;
+                olen = 2;
+                break;
+            case 0x2A: { /* VerifyData: offset[2] bytecnt[2] -> ack + CRC */
+                uint16_t off = (uint16_t)b[1] | ((uint16_t)b[2] << 8);
+                uint16_t bytecnt = (uint16_t)b[3] | ((uint16_t)b[4] << 8);
+                uint16_t crc = cw_crc16_x25_mem(cw_isp_base + off, bytecnt);
+                cw_isp_out[0] = 0x00;
+                cw_isp_out[1] = (uint8_t)(crc & 0xFF);
+                cw_isp_out[2] = (uint8_t)(crc >> 8);
+                olen = 3;
+                break;
+            }
+            default:
+                cw_isp_out[0] = 0x00;
+                olen = 1;
+                break;
+            }
+        }
+    }
+
+    resp[0] = 0x65;
+    resp[1] = (uint8_t)olen;
+    memcpy(resp + 2, cw_isp_out, olen);
+    {
+        uint16_t crc = cw_crc16_x25(resp, (uint16_t)(olen + 2u));
+        resp[olen + 2] = (uint8_t)(crc & 0xFF);
+        resp[olen + 3] = (uint8_t)(crc >> 8);
+    }
+    resp[olen + 4] = 0x90;
+    resp[olen + 5] = 0x00;
+    return (uint16_t)(olen + 6u);
+}
+
 static uint16_t cw_writer_handle(const uint8_t *cmd, uint16_t len, uint8_t *resp) {
     static uint8_t rec_cursor = 0;
     static uint8_t proj_name[40] = "project.hex";
@@ -307,7 +487,20 @@ static uint16_t cw_writer_handle(const uint8_t *cmd, uint16_t len, uint8_t *resp
         resp[0] = 0x90; resp[1] = 0x00;
         return 2;
     }
-    if (cla == 0xF5 || cla == 0xF6) {
+    if (cla == 0xF0 || cla == 0xF4 || cla == 0xFD) {
+        return cw_read_block(resp);
+    }
+    if (cla == 0xF2) {
+        if (len >= 5) {
+            cw_flash_addr = ((uint32_t)cmd[1] << 16) | ((uint32_t)cmd[2] << 8) | cmd[3];
+        }
+        resp[0] = 0x90; resp[1] = 0x00;
+        return 2;
+    }
+    if (cla == 0x65) {
+        return cw_isp_handle(cmd, len, resp);
+    }
+    if (cla == 0xF3 || cla == 0xF5 || cla == 0xF6) {
         resp[0] = 0x90; resp[1] = 0x00;
         return 2;
     }
@@ -340,7 +533,6 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
             }
 
             size_t apdu_sent = 0;
-            printf("CCID RX itf=%u msg=%02X len=%lu seq=%u\n", itf, ccid_header[itf]->bMessageType, (unsigned long)ccid_header[itf]->dwLength, ccid_header[itf]->bSeq);
             if (ccid_header[itf]->bMessageType != CCID_SLOT_STATUS) {
                 DEBUG_PAYLOAD((uint8_t *)ccid_header[itf], ccid_header[itf]->dwLength + 10);
             }
@@ -430,16 +622,19 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
                 }
                 uint16_t cw_len = 0;
                 if (cw_active) {
-                    cw_len = cw_writer_handle(cw_cmd, cw_dlen, (uint8_t *)&ccid_resp_fast[itf]->apdu);
+                    /* Large responses (512-byte flash blocks) do not fit in the
+                     * 64-byte fast-response area, so build them in cw_big_out. */
+                    cw_len = cw_writer_handle(cw_cmd, cw_dlen, cw_big_out + 10);
                 }
                 if (cw_len > 0) {
-                    ccid_resp_fast[itf]->bMessageType = CCID_DATA_BLOCK_RET;
-                    ccid_resp_fast[itf]->dwLength = cw_len;
-                    ccid_resp_fast[itf]->bSlot = 0;
-                    ccid_resp_fast[itf]->bSeq = ccid_header[itf]->bSeq;
-                    ccid_resp_fast[itf]->abRFU0 = ccid_status;
-                    ccid_resp_fast[itf]->abRFU1 = 0;
-                    ccid_write_fast(itf, CONST_BYTE_ARRAY((const uint8_t *)ccid_resp_fast[itf], (uint16_t)(cw_len + 10)));
+                    ccid_header_t *cw_hdr = (ccid_header_t *)cw_big_out;
+                    cw_hdr->bMessageType = CCID_DATA_BLOCK_RET;
+                    cw_hdr->dwLength = cw_len;
+                    cw_hdr->bSlot = 0;
+                    cw_hdr->bSeq = ccid_header[itf]->bSeq;
+                    cw_hdr->abRFU0 = ccid_status;
+                    cw_hdr->abRFU1 = 0;
+                    ccid_write_fast(itf, CONST_BYTE_ARRAY(cw_big_out, (uint16_t)(cw_len + 10)));
                     apdu_sent = cw_len + 10;
                 }
                 else {
@@ -556,7 +751,12 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
     ((tusb_desc_interface_t *) itf_vendor)->bInterfaceClass = TUSB_CLASS_VENDOR_SPECIFIC;
 #if TUSB_SMARTCARD_CCID_EPS == 3
     ((tusb_desc_interface_t *) itf_vendor)->bNumEndpoints -= 1;
-    vendord_open(rhport, (tusb_desc_interface_t *)itf_vendor, max_len - sizeof(tusb_desc_endpoint_t));
+    /* Bound the descriptor range to this interface's bulk endpoints only.
+     * Passing max_len - sizeof(endpoint) still left the interrupt endpoint in
+     * range, so vendord_open opened it as the tx stream and every CCID reply
+     * was queued on the notification pipe instead of the bulk-IN endpoint. */
+    const uint16_t vend_len = (uint16_t)(drv_len - sizeof(tusb_desc_endpoint_t));
+    vendord_open(rhport, (tusb_desc_interface_t *)itf_vendor, vend_len);
     tusb_desc_endpoint_t const *desc_ep = (tusb_desc_endpoint_t const *)((uint8_t *)itf_desc + drv_len - sizeof(tusb_desc_endpoint_t));
     TU_ASSERT(usbd_edpt_open(rhport, desc_ep), 0);
     uint8_t msg[] = { 0x50, 0x03 };
@@ -627,7 +827,6 @@ static bool ccid_xfer_cb(uint8_t rhport,
                          uint8_t ep_addr,
                          xfer_result_t result,
                          uint32_t xferred_bytes) {
-    //printf("------ CALLED XFER_CB\n");
     return vendord_xfer_cb(rhport, ep_addr, result, xferred_bytes);
     //return true;
 }

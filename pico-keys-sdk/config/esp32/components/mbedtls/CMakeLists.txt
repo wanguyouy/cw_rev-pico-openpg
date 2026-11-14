@@ -1,6 +1,7 @@
 set(PICO_KEYS_MBEDTLS_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../third-party/mbedtls")
-set(PICO_KEYS_MBEDTLS_PORT_DIR "$ENV{IDF_PATH}/components/mbedtls/port")
-set(PICO_KEYS_MBEDTLS_CRT_BUNDLE_DIR "$ENV{IDF_PATH}/components/mbedtls/esp_crt_bundle")
+file(TO_CMAKE_PATH "$ENV{IDF_PATH}" PICO_KEYS_IDF_PATH)
+set(PICO_KEYS_MBEDTLS_PORT_DIR "${PICO_KEYS_IDF_PATH}/components/mbedtls/port")
+set(PICO_KEYS_MBEDTLS_CRT_BUNDLE_DIR "${PICO_KEYS_IDF_PATH}/components/mbedtls/esp_crt_bundle")
 
 if(NOT EXISTS "${PICO_KEYS_MBEDTLS_DIR}/include/mbedtls/mbedtls_config.h")
     message(FATAL_ERROR "Pico Keys MbedTLS fork was not found at ${PICO_KEYS_MBEDTLS_DIR}")
