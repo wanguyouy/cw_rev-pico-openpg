@@ -93,6 +93,11 @@ typedef struct {
 /* Virtual card is always inserted: report ICC present from boot so GetSlotStatus
  * agrees with the card-present notify (otherwise Usbccid sees absent -> REMOVED_CARD). */
 uint8_t ccid_status = 0;
+/* Tracks whether the host has powered the ICC on. Usbccid detects the card from the
+ * notify "changed" event, so assert 0x03 (present+changed) until the first IccPowerOn
+ * lands; afterwards keep 0x02 (present, no change) so repeated re-insertion events
+ * don't abort the connect handshake (SCARD_W_UNRESPONSIVE_CARD). */
+static uint8_t ccid_card_powered = 0;
 #ifndef ENABLE_EMULATION
 static uint8_t itf_num;
 static uint8_t wcid_event_data[USB_BUF_SIZE];
@@ -493,11 +498,6 @@ void driver_exec_finished_cont_ccid(uint8_t itf, uint16_t size_next, uint16_t of
 }
 
 static uint8_t ccid_int_ep = 0;
-/* Tracks whether the host has powered the ICC on. Usbccid detects the card from the
- * notify "changed" event, so we must assert 0x03 (present+changed) until the first
- * IccPowerOn lands; afterwards keep 0x02 (present, no change) so repeated re-insertion
- * events don't abort the connect handshake (SCARD_W_UNRESPONSIVE_CARD). */
-static uint8_t ccid_card_powered = 0;
 
 void ccid_task(void) {
     const uint32_t status_poll_interval_ms = 1;
