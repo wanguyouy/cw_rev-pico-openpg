@@ -249,20 +249,12 @@ static int ccid_write_fast(uint8_t itf, const_byte_array_t buffer) {
 #define CW_BLOCK_SIZE 510
 #define CW_IMAGE_MAX 0x10000
 static uint8_t cw_big_out[10 + CW_BLOCK_SIZE + 2];
-static uint32_t cw_flash_addr;
-static uint8_t cw_flash[CW_BLOCK_SIZE];
 
 static uint16_t cw_crc16_x25(const uint8_t *p, uint16_t n);
 
-/* F0/F4/FD are programmer-buffer reads: CW_Programmer only uses them for the
- * offline file preview, so an erased-looking buffer is fine. */
-static uint16_t cw_read_block(uint8_t *resp) {
-    memset(cw_flash, 0xFF, sizeof(cw_flash));
-    memcpy(resp, cw_flash, CW_BLOCK_SIZE);
-    resp[CW_BLOCK_SIZE] = 0x90;
-    resp[CW_BLOCK_SIZE + 1] = 0x00;
-    return CW_BLOCK_SIZE + 2;
-}
+/* Cache of the data the PC wrote, used only to log the 0x2A comparison. */
+static uint8_t cw_img[CW_IMAGE_MAX];
+static uint32_t cw_img_len;
 
 /* ---- CW32 ISP protocol (frames: 0x65 len body crc16/x25(lo,hi)) ---- */
 static uint16_t cw_crc16_x25(const uint8_t *p, uint16_t n) {
@@ -277,12 +269,6 @@ static uint16_t cw_crc16_x25(const uint8_t *p, uint16_t n) {
 
 /* Every ISP frame coming from CW_Programmer is forwarded verbatim to the real
  * CW32 on UART1; the chip's own answer is what goes back to the PC. */
-/* Mirror of what has been written to the target.  CW_Programmer compares its
- * own CRC of the whole file against every 0x2A answer, so the answer has to be
- * the CRC of the complete image, not of the requested slice. */
-static uint8_t cw_img[CW_IMAGE_MAX];
-static uint32_t cw_img_len;
-
 static uint16_t cw_isp_handle(const uint8_t *frame, uint16_t len, uint8_t *resp) {
     uint16_t olen = 0;
     int rc;
@@ -408,20 +394,16 @@ static uint16_t cw_writer_handle(const uint8_t *cmd, uint16_t len, uint8_t *resp
         return 2;
     }
     if (cla == 0xF0 || cla == 0xF4 || cla == 0xFD) {
-        return cw_read_block(resp);
+        resp[0] = 0x90; resp[1] = 0x00; return 2;
     }
     if (cla == 0xF2) {
-        if (len >= 5) {
-            cw_flash_addr = ((uint32_t)cmd[1] << 16) | ((uint32_t)cmd[2] << 8) | cmd[3];
-        }
-        printf("[ccid] F2 len=%u -> addr=%06X\n", (unsigned)len, (unsigned)cw_flash_addr);
         resp[0] = 0x90; resp[1] = 0x00;
         return 2;
     }
     if (cla == 0x65) {
         return cw_isp_handle(cmd, len, resp);
     }
-    if (cla == 0xF3 || cla == 0xF5 || cla == 0xF6) {
+    if (cla == 0xF3 || cla == 0xF5 || cla == 0xF6 || cla == 0xFA) {
         resp[0] = 0x90; resp[1] = 0x00;
         return 2;
     }
