@@ -239,6 +239,80 @@ static int ccid_write_fast(uint8_t itf, const_byte_array_t buffer) {
     return driver_write_ccid(itf, buffer);
 }
 
+/* CW Writer offline-programming protocol emulation.
+ * Handles the raw (non-ISO7816) command stream CW_Programmer sends over CCID.
+ * Returns the response length (payload + SW1SW2) written into resp, or 0 when
+ * the buffer is not a CW Writer command (caller falls back to OpenPGP). */
+static uint16_t cw_writer_handle(const uint8_t *cmd, uint16_t len, uint8_t *resp) {
+    static uint8_t rec_cursor = 0;
+    static uint8_t proj_name[40] = "project.hex";
+    static uint8_t proj_name_len = 11;
+    static uint8_t proj_size[4] = {0x00, 0x01, 0x86, 0xa0}; /* 100000 */
+    static const uint8_t uid[16] = {
+        0x11, 0x1d, 0xfd, 0x03, 0x8e, 0x79, 0xcf, 0x92,
+        0xa0, 0x86, 0x01, 0x00, 0xd5, 0x77, 0x90, 0x51
+    };
+    uint16_t n = 0;
+    uint8_t cla, ins;
+    if (len == 0) {
+        return 0;
+    }
+    cla = cmd[0];
+    if (cla == 0xF8) {
+        resp[0] = 0x01; resp[1] = 0x60; resp[2] = 0x90; resp[3] = 0x00;
+        return 4;
+    }
+    if (cla == 0xE0) {
+        ins = (len >= 2) ? cmd[1] : 0x00;
+        if (ins == 0x01) {
+            rec_cursor = 0;
+        }
+        else if (ins == 0x29) {
+            if (rec_cursor == 0) {
+                resp[n++] = 0xff; resp[n++] = 0x00;
+                memcpy(resp + n, proj_name, proj_name_len); n += proj_name_len;
+                rec_cursor = 1;
+            }
+            else {
+                resp[n++] = 0xff; resp[n++] = 0x01;
+                memcpy(resp + n, proj_size, 4); n += 4;
+            }
+            resp[n++] = 0x90; resp[n++] = 0x00;
+            return n;
+        }
+        else if (ins == 0x28 && len >= 4 && cmd[2] == 0xff) {
+            if (cmd[3] == 0x00) {
+                uint16_t nl = (uint16_t)(len - 4);
+                if (nl > sizeof(proj_name)) {
+                    nl = sizeof(proj_name);
+                }
+                memcpy(proj_name, cmd + 4, nl);
+                proj_name_len = (uint8_t)nl;
+            }
+            else if (cmd[3] == 0x01 && len >= 8) {
+                memcpy(proj_size, cmd + 4, 4);
+            }
+        }
+        resp[0] = 0x90; resp[1] = 0x00;
+        return 2;
+    }
+    if (cla == 0xE1) {
+        ins = (len >= 2) ? cmd[1] : 0x00;
+        if (ins == 0x11) {
+            memcpy(resp, uid, 16);
+            resp[16] = 0x90; resp[17] = 0x00;
+            return 18;
+        }
+        resp[0] = 0x90; resp[1] = 0x00;
+        return 2;
+    }
+    if (cla == 0xF5 || cla == 0xF6) {
+        resp[0] = 0x90; resp[1] = 0x00;
+        return 2;
+    }
+    return 0;
+}
+
 int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
     (void) rx_read;
     if (ccid_rx[itf].w_ptr - ccid_rx[itf].r_ptr >= 10) {
@@ -343,14 +417,29 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
                 ccid_write_fast(itf, CONST_BYTE_ARRAY((const uint8_t *)ccid_resp_fast[itf], 18));
             }
             else if (ccid_header[itf]->bMessageType == CCID_XFR_BLOCK) {
-                apdu.rdata = &ccid_response[itf]->apdu;
-                apdu_sent = apdu_process(itf, CONST_BYTE_ARRAY(&ccid_header[itf]->apdu, (uint16_t)ccid_header[itf]->dwLength));
-#ifndef ENABLE_EMULATION
-                if (apdu_sent > 0) {
-                    card_start(sc_itf_to_usb_itf(itf), apdu_thread);
-                    usb_send_event(EV_CMD_AVAILABLE);
+                uint16_t cw_len = cw_writer_handle((const uint8_t *)&ccid_header[itf]->apdu,
+                                                   (uint16_t)ccid_header[itf]->dwLength,
+                                                   (uint8_t *)&ccid_resp_fast[itf]->apdu);
+                if (cw_len > 0) {
+                    ccid_resp_fast[itf]->bMessageType = CCID_DATA_BLOCK_RET;
+                    ccid_resp_fast[itf]->dwLength = cw_len;
+                    ccid_resp_fast[itf]->bSlot = 0;
+                    ccid_resp_fast[itf]->bSeq = ccid_header[itf]->bSeq;
+                    ccid_resp_fast[itf]->abRFU0 = ccid_status;
+                    ccid_resp_fast[itf]->abRFU1 = 0;
+                    ccid_write_fast(itf, CONST_BYTE_ARRAY((const uint8_t *)ccid_resp_fast[itf], (uint16_t)(cw_len + 10)));
+                    apdu_sent = cw_len + 10;
                 }
+                else {
+                    apdu.rdata = &ccid_response[itf]->apdu;
+                    apdu_sent = apdu_process(itf, CONST_BYTE_ARRAY(&ccid_header[itf]->apdu, (uint16_t)ccid_header[itf]->dwLength));
+#ifndef ENABLE_EMULATION
+                    if (apdu_sent > 0) {
+                        card_start(sc_itf_to_usb_itf(itf), apdu_thread);
+                        usb_send_event(EV_CMD_AVAILABLE);
+                    }
 #endif
+                }
             }
             return (uint16_t)apdu_sent;
         }
