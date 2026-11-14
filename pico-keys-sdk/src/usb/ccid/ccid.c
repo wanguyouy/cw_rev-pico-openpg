@@ -488,10 +488,28 @@ void driver_exec_finished_cont_ccid(uint8_t itf, uint16_t size_next, uint16_t of
     ccid_write_offset(itf, size_next+10, offset);
 }
 
+static uint8_t ccid_int_ep = 0;
+
 void ccid_task(void) {
     const uint32_t status_poll_interval_ms = 1;
     static uint32_t last_status_poll_ms[8] = {0};
     uint32_t now_ms = board_millis();
+    /* Re-assert card-present periodically: the single boot-time notify is missed
+     * if the host opens the interrupt pipe later, leaving Usbccid reporting no card. */
+    static uint32_t last_notify_ms = 0;
+    if (ccid_int_ep != 0 && now_ms - last_notify_ms >= 1000) {
+        last_notify_ms = now_ms;
+        if (!usbd_edpt_busy(0, ccid_int_ep)) {
+            static uint8_t notify_msg[2] = { 0x50, 0x03 };
+#if defined(PICO_PLATFORM)
+            usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg));
+#elif defined(ESP_PLATFORM)
+            usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg), false);
+#else
+            usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg), sizeof(notify_msg));
+#endif
+        }
+    }
 #ifndef ENABLE_EMULATION
     if (wcid_event_pending && ITF_SC_WCID != ITF_INVALID && ccid_tx[ITF_SC_WCID].w_ptr == ccid_tx[ITF_SC_WCID].r_ptr) {
         uint32_t written = tud_vendor_n_write(ITF_SC_WCID, wcid_event_data, wcid_event_len);
@@ -557,6 +575,7 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
     vendord_open(rhport, (tusb_desc_interface_t *)itf_vendor, max_len - sizeof(tusb_desc_endpoint_t));
     tusb_desc_endpoint_t const *desc_ep = (tusb_desc_endpoint_t const *)((uint8_t *)itf_desc + drv_len - sizeof(tusb_desc_endpoint_t));
     TU_ASSERT(usbd_edpt_open(rhport, desc_ep), 0);
+    ccid_int_ep = desc_ep->bEndpointAddress;
     uint8_t msg[] = { 0x50, 0x03 };
 #if defined(PICO_PLATFORM)
     usbd_edpt_xfer(rhport, desc_ep->bEndpointAddress, msg, sizeof(msg));
