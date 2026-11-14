@@ -19,7 +19,8 @@ jobs:
           idf.py set-target esp32s3
           idf.py build
           mkdir -p release
-          esptool.py --chip ESP32-S3 merge_bin -o release/cw_writer_s3.bin @build/flash_args
+          cd build
+          esptool.py --chip ESP32-S3 merge_bin -o ../release/cw_writer_s3.bin @flash_args
 
       - uses: actions/upload-artifact@v4
         with:
