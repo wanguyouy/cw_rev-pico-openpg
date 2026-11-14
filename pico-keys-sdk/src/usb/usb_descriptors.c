@@ -351,7 +351,7 @@ char const *string_desc_arr [] = {
     "Writer",                       // 2: Product
     "11223344",                      // 3: Serials, should use chip ID
     "MAC"                   // 4: MAC address string, handled separately
-    , "HID Interface"
+    , "Writer"              // 5: CCID iInterface (ITF_CCID+5) -> PC/SC reader name "CW Writer 0"
     , "HID Keyboard Interface"
 #ifdef USB_ITF_HID
     , "CCID OTP FIDO Interface"
