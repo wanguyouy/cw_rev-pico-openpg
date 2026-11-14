@@ -1,0 +1,10 @@
+{
+  "name": "ESP-IDF v5.5 (ESP32-S3 CCID)",
+  "image": "espressif/idf:v5.5",
+  "postCreateCommand": "git submodule update --init --recursive",
+  "customizations": {
+    "vscode": {
+      "extensions": ["espressif.esp-idf-extension"]
+    }
+  }
+}

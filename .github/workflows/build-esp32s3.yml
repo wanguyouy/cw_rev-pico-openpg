@@ -1,0 +1,27 @@
+name: build-esp32s3-cw-writer
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build ESP32-S3 CCID firmware
+        run: |
+          . /opt/esp/idf/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+          mkdir -p release
+          esptool.py --chip ESP32-S3 merge_bin -o release/cw_writer_s3.bin @build/flash_args
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cw_writer_s3
+          path: release/cw_writer_s3.bin
