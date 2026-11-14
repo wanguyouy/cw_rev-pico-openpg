@@ -91,13 +91,7 @@ typedef struct {
     uint8_t apdu; //Actually it is an array
 }) ccid_header_t;
 
-/* Virtual card is always inserted: report ICC present from boot so GetSlotStatus
- * agrees with the card-present notify (otherwise Usbccid sees absent -> REMOVED_CARD). */
-uint8_t ccid_status = 0;
-/* bmSlotICCState bit0=changed, bit1=0 present/1 absent. So 0x01=present+changed
- * (insertion), 0x00=present+no-change (stable); 0x03/0x02 mean ABSENT (removal).
- * Assert insertion (0x01) until the host powers the ICC on, then stable (0x00). */
-static uint8_t ccid_card_powered = 0;
+uint8_t ccid_status = 1;
 #ifndef ENABLE_EMULATION
 static uint8_t itf_num;
 static uint8_t wcid_event_data[USB_BUF_SIZE];
@@ -373,7 +367,6 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
                     //card_start(apdu_thread);
                 }
                 ccid_status = 0;
-                ccid_card_powered = 1;
                 ccid_write_fast(itf, CONST_BYTE_ARRAY((const uint8_t *)ccid_resp_fast[itf], (uint16_t)(size_atr + 10)));
 
                 led_set_mode(MODE_MOUNTED);
@@ -383,7 +376,6 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
                     //card_exit(0);
                 }
                 ccid_status = 1;
-                ccid_card_powered = 0;
                 ccid_resp_fast[itf]->bMessageType = CCID_SLOT_STATUS_RET;
                 ccid_resp_fast[itf]->dwLength = 0;
                 ccid_resp_fast[itf]->bSlot = 0;
@@ -498,31 +490,10 @@ void driver_exec_finished_cont_ccid(uint8_t itf, uint16_t size_next, uint16_t of
     ccid_write_offset(itf, size_next+10, offset);
 }
 
-static uint8_t ccid_int_ep = 0;
-
 void ccid_task(void) {
     const uint32_t status_poll_interval_ms = 1;
     static uint32_t last_status_poll_ms[8] = {0};
     uint32_t now_ms = board_millis();
-    /* Re-assert card-present on the interrupt pipe (the single boot notify is missed).
-     * bmSlotICCState bit0=changed, bit1=0 present/1 absent: 0x01=insertion, 0x00=stable
-     * present. (0x03/0x02 wrongly signal ABSENT -> Usbccid powers off -> REMOVED_CARD.)
-     * Assert insertion until the host powers the ICC on, then hold stable present. */
-    static uint32_t last_notify_ms = 0;
-    if (ccid_int_ep != 0 && now_ms - last_notify_ms >= 1000) {
-        last_notify_ms = now_ms;
-        if (!usbd_edpt_busy(0, ccid_int_ep)) {
-            static uint8_t notify_msg[2] = { 0x50, 0x01 };
-            notify_msg[1] = ccid_card_powered ? 0x00 : 0x01;
-#if defined(PICO_PLATFORM)
-            usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg));
-#elif defined(ESP_PLATFORM)
-            usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg), false);
-#else
-            usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg), sizeof(notify_msg));
-#endif
-        }
-    }
 #ifndef ENABLE_EMULATION
     if (wcid_event_pending && ITF_SC_WCID != ITF_INVALID && ccid_tx[ITF_SC_WCID].w_ptr == ccid_tx[ITF_SC_WCID].r_ptr) {
         uint32_t written = tud_vendor_n_write(ITF_SC_WCID, wcid_event_data, wcid_event_len);
@@ -588,8 +559,7 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
     vendord_open(rhport, (tusb_desc_interface_t *)itf_vendor, max_len - sizeof(tusb_desc_endpoint_t));
     tusb_desc_endpoint_t const *desc_ep = (tusb_desc_endpoint_t const *)((uint8_t *)itf_desc + drv_len - sizeof(tusb_desc_endpoint_t));
     TU_ASSERT(usbd_edpt_open(rhport, desc_ep), 0);
-    ccid_int_ep = desc_ep->bEndpointAddress;
-    uint8_t msg[] = { 0x50, 0x01 };
+    uint8_t msg[] = { 0x50, 0x03 };
 #if defined(PICO_PLATFORM)
     usbd_edpt_xfer(rhport, desc_ep->bEndpointAddress, msg, sizeof(msg));
 #elif defined(ESP_PLATFORM)
