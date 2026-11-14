@@ -16,6 +16,7 @@
  */
 
 #include "picokeys.h"
+#include <stdio.h>
 #include "led/led.h"
 #include "random.h"
 #ifdef PICO_PLATFORM
@@ -93,11 +94,6 @@ typedef struct {
 /* Virtual card is always inserted: report ICC present from boot so GetSlotStatus
  * agrees with the card-present notify (otherwise Usbccid sees absent -> REMOVED_CARD). */
 uint8_t ccid_status = 0;
-/* Tracks whether the host has powered the ICC on. Usbccid detects the card from the
- * notify "changed" event, so assert 0x03 (present+changed) until the first IccPowerOn
- * lands; afterwards keep 0x02 (present, no change) so repeated re-insertion events
- * don't abort the connect handshake (SCARD_W_UNRESPONSIVE_CARD). */
-static uint8_t ccid_card_powered = 0;
 #ifndef ENABLE_EMULATION
 static uint8_t itf_num;
 static uint8_t wcid_event_data[USB_BUF_SIZE];
@@ -346,6 +342,7 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
             }
 
             size_t apdu_sent = 0;
+            printf("CCID RX itf=%u msg=%02X len=%lu seq=%u\n", itf, ccid_header[itf]->bMessageType, (unsigned long)ccid_header[itf]->dwLength, ccid_header[itf]->bSeq);
             if (ccid_header[itf]->bMessageType != CCID_SLOT_STATUS) {
                 DEBUG_PAYLOAD((uint8_t *)ccid_header[itf], ccid_header[itf]->dwLength + 10);
             }
@@ -372,7 +369,6 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
                     //card_start(apdu_thread);
                 }
                 ccid_status = 0;
-                ccid_card_powered = 1;
                 ccid_write_fast(itf, CONST_BYTE_ARRAY((const uint8_t *)ccid_resp_fast[itf], (uint16_t)(size_atr + 10)));
 
                 led_set_mode(MODE_MOUNTED);
@@ -382,7 +378,6 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
                     //card_exit(0);
                 }
                 ccid_status = 1;
-                ccid_card_powered = 0;
                 ccid_resp_fast[itf]->bMessageType = CCID_SLOT_STATUS_RET;
                 ccid_resp_fast[itf]->dwLength = 0;
                 ccid_resp_fast[itf]->bSlot = 0;
@@ -503,15 +498,15 @@ void ccid_task(void) {
     const uint32_t status_poll_interval_ms = 1;
     static uint32_t last_status_poll_ms[8] = {0};
     uint32_t now_ms = board_millis();
-    /* Heartbeat card-present on the interrupt pipe in case the boot notify was missed.
-     * Assert "changed" (0x03) only until the host powers the ICC on; then "no change"
-     * (0x02) so we don't keep re-triggering insertion during the connect handshake. */
+    /* Re-assert card-present (present+changed, 0x03) on the interrupt pipe: Usbccid
+     * detects the card from the "changed" event and misses the single boot notify.
+     * A "no change" (0x02) heartbeat is ignored and leaves it reporting REMOVED_CARD.
+     * ccid_status=0 keeps GetSlotStatus consistent (present) so the handshake holds. */
     static uint32_t last_notify_ms = 0;
     if (ccid_int_ep != 0 && now_ms - last_notify_ms >= 1000) {
         last_notify_ms = now_ms;
         if (!usbd_edpt_busy(0, ccid_int_ep)) {
             static uint8_t notify_msg[2] = { 0x50, 0x03 };
-            notify_msg[1] = ccid_card_powered ? 0x02 : 0x03;
 #if defined(PICO_PLATFORM)
             usbd_edpt_xfer(0, ccid_int_ep, notify_msg, sizeof(notify_msg));
 #elif defined(ESP_PLATFORM)
