@@ -1,216 +1,67 @@
-# Pico OpenPGP
-This project aims at transforming your Raspberry Pico or ESP32 microcontroller into a Smart Card with an OpenPGP applet integrated. The Pico works as a reader with an embedded OpenPGP card, like a USB card.
+# CW Writer 兼容的 ESP32-S3 脱机 ISP 烧录器
 
-OpenPGP cards are used to manage PGP keys and do cryptographic operations, such as keypair generation, signing and asymmetric deciphering. Pico OpenPGP follows the [**OpenPGP 3.4.1** specifications](https://gnupg.org/ftp/specs/OpenPGP-smart-card-application-3.4.pdf "**OpenPGP 3.4.1** specifications"), available at [GnuPG](http://gnupg.org "GnuPG").
+把 ESP32-S3 做成一个「CW Writer 编程器」：USB 侧伪装成官方编程器（VID `0x0483` / PID `0x3258`，在 CW_Programmer 中显示为 `CW Writer 0`），UART 侧把收到的 CW32 ISP 帧原样转发给真实芯片。
 
-If you are looking for a OpenPGP + Fido, see: https://github.com/polhenarejos/pico-fido2. Available through [PicoKey App](https://www.picokeys.com/picokeyapp/ "PicoKey App").
+CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写入 / 校验 / 跳转全部发生在真实的 CW32L010 上。
 
-## Features
-Pico OpenPGP has implemented the following features:
+本项目基于 [pico-openpgp](https://github.com/polhenarejos/pico-openpgp) 的 SDK，保留了其 USB/CCID 框架，替换掉了原有的 OpenPGP 智能卡逻辑。
 
-- Key generation and encrypted storage.
-- RSA key generation from 1024 to 4096 bits.
-- ECDSA key generation from 192 to 521 bits.
-- ECC curves secp256r1, secp384r1, secp521r1, brainpoolP256r1, brainpoolP384r1, brainpoolP512r1, secp256k1.
-- SHA1, SHA224, SHA256, SHA384, SHA512 digests.
-- RSA-PKCS and raw RSA signature.
-- ECDSA raw and hash signature.
-- ECDH key derivation.
-- PIN authorization.
-- PKCS11 compliant interface.
-- HRNG (hardware random number generator).
-- Device Encryption Key (DEK).
-- USB/CCID support with OpenSC, openssl, etc.
-- Extended APDU support.
-- Lifecycle card (termination and activation).
-- Press-to-confirm button.
-- User Interaction Flag for enabling/disabling press-to-confirm button.
-- Key Derivation Function (KDF) for PIN.
-- Manage Security Environment (MSE).
-- DEK for internal safe storage.
-- AES key generation.
-- AES ciphering and deciphering.
-- Cardholder certificates support.
-- Secure Boot and Secure Lock in RP2350 and ESP32-S3 MCUs.
-- One Time Programming to store the master key that encrypts all resident keys and seeds.
-- Rescue interface to allow recovery of the device if it becomes unresponsive or undetectable.
-- LED customization with PicoKey App.
+## 状态
 
-All these features are compliant with the specification. Therefore, if you detect some behaviour that is not expected or it does not follow the rules of specs, please open an issue.
+| 功能 | 状态 |
+|---|---|
+| USB 连接、芯片识别（Query） | 可用 |
+| 在线编程（擦除 / 编程 / 校验 / 读保护查询 / 运行） | 可用 |
+| 离线编程（hex 存到 ESP32 后脱机烧录） | 未实现 |
+| OpenPGP 智能卡相关功能 | 上游实现仍在，未改动也未验证 |
 
-## AES support
-There is no known software that supports AES with OpenPGP. Nevertheless, it can be used with customized PKCS11 modules or interfacing with raw APDU packets.
+## 接线
 
-During asymmetric key generation for DEC key, Pico OpenPGP also generates a 32 bits symmetric key for AES operations.
+| ESP32-S3 | CW32L010 | 说明 |
+|---|---|---|
+| GPIO4 | PA07 | SWDIO / UART1_RXD |
+| GPIO5 | PA08 | SWCLK / UART1_TXD |
+| GPIO6 | NRST | 复位控制 |
+| 3V3 | VDD | 目标供电（也可外部供电） |
+| GND | GND | 共地 |
 
-OpenPGP card 3.4 specifications describe the procedure to perform ciphering (encryption and decryption) with AES via PSO:ENCIPHER and PSO:DECIPHER. Both commands are supported by Pico OpenPGP.
+ISP 模式下 PA07/PA08 被 BootLoader 复用为 UART1，异步半双工 8N1，初始 115200 bps。
 
-### About Gnuk
-This project was inspired by [Gnuk](https://wiki.debian.org/GNUK "Gnuk"), a same project but focused on STM32 processor family. Despite the initial idea was to port Gnuk to the Raspberry Pico family, the underlaying architecture is widely different (although both run on ARM). For instance, the Pico has two ARM cores, with an appropiate SDK able to leverage them. Also, Pico has an internal flash storage, which is farly larger compared to STM32 ROM storage. Finally, the Pico has a complete USB interface based on TinyUSB, which difficults to port Gnuk. These are only few examples of the difficulties of porting Gnuk to the Raspberry Pico.
+进入 ISP 的时序：`NRST` 拉低 → PA07 输出 50 kHz 方波 → 释放 `NRST` → 保持时钟 20 ms → 停时钟、切换为 UART。
 
-As a consequence, Pico OpenPGP is designed from zero. Well, not strictly from zero, as it borrows some of the cryptographic operations implemented with MbedTLS library.
+## 构建
 
-Whilst Gnuk is OpenPGP 2.0 with small set of enhancements, Pico OpenPGP aims at being OpenPGP 3.4 compliant, with new features (not present in Gnuk), such as Manage Security Environment (MSE) or UIF.
+本工程使用本地 ESP-IDF（5.5.x 验证过），不再依赖云端编译：
 
-## Security considerations
-All secret keys (asymmetric and symmetric) are stored encrypted in the flash memory of the Raspberry Pico using a Device Encyrption Key (DEK). DEK is a 256 bit AES key used to protect private and secret keys. Keys are never stored in RAM except for signature and decryption operations and only during the process. All keys (including DEK) are loaded and cleared every time to avoid potential security flaws.
-
-At the same time, DEK is encrypted with doubled salted and hashed PIN. For RP2350 and ESP32-S3 microcontrollers it is masked by a secure device 32 bytes key. Also, the PIN is hashed in memory during the session. Hence, PIN is never stored in plain text neither in flash nor in memory. Note that PIN is conveyed from the host to the Pico in plain text if no secure channel is provided.
-
-If the Pico is stolen the contents of private and secret keys cannot be read without the PIN, even if the flash memory is dumped.
-
-### RP2350 and ESP32-S3
-RP2350 and ESP32-S3 microcontrollers are equipped with advanced security features, including Secure Boot and Secure Lock, ensuring that firmware integrity and authenticity are tightly controlled. Both devices support the storage of the Device Encryption Key (DEK) in an OTP (One-Time Programmable) memory region, making it permanently inaccessible for external access or tampering. This secure, non-volatile region guarantees that critical security keys are embedded into the hardware, preventing unauthorized access and supporting robust defenses against code injection or firmware modification. Together, Secure Boot and Secure Lock enforce firmware authentication, while the DEK in OTP memory solidifies the foundation for secure operations.
-
-## Download
-**If you own an ESP32-S3 board, go to [ESP32 Flasher](https://www.picokeys.com/esp32-flasher/) for flashing your Pico OpenPGP.**
-
-If you own a Raspberry Pico (RP2040 or RP2350), go to [Download page](https://www.picokeys.com/getting-started/), select your vendor and model and download the proper firmware; or go to [Release page](https://www.github.com/polhenarejos/pico-openpgp/releases/) and download the UF2 file for your board.
-
-UF2 files are shiped with a VID/PID granted by RaspberryPi (2E8A:10FF). If you plan to use it with OpenSC or similar tools, you should modify Info.plist of CCID driver to add these VID/PID or use the [PicoKey App](https://www.picokeys.com/picokeyapp/ "PicoKey App").
-
-You can use whatever VID/PID for internal purposes, but remember that you are not authorized to distribute the binary with a VID/PID that you do not own.
-
-Note that the [PicoKey App](https://www.picokeys.com/picokeyapp/ "PicoKey App") is the most recommended.
-
-## Build for Raspberry Pico
-Before building, ensure you have installed the toolchain for the Pico and the Pico SDK is properly located in your drive.
+```powershell
+. C:\esp\v5.5.5\esp-idf\export.ps1
+idf.py -C <本仓库路径> build
+idf.py -C <本仓库路径> -p COM7 -b 460800 flash
 ```
-git clone https://github.com/polhenarejos/pico-openpgp
-git submodule update --init --recursive
-cd pico-openpgp
-mkdir build
-cd build
-PICO_SDK_PATH=/path/to/pico-sdk cmake .. -DPICO_BOARD=board_type -DUSB_VID=0x1234 -DUSB_PID=0x5678
-make
-```
-Note that `PICO_BOARD`, `USB_VID` and `USB_PID` are optional. If not provided, `pico` board and VID/PID `FEFF:FCFD` will be used.
 
-Additionally, you can pass the `VIDPID=value` parameter to build the firmware with a known VID/PID. The supported values are:
+## 使用
 
-- `NitroHSM`
-- `NitroFIDO2`
-- `NitroStart`
-- `NitroPro`
-- `Nitro3`
-- `Yubikey5`
-- `YubikeyNeo`
-- `YubiHSM`
-- `Gnuk`
-- `GnuPG`
+1. 接好线，ESP32-S3 通过 USB 连电脑；
+2. 打开 CW_Programmer，选择 `CW Writer 0` 并连接；
+3. 芯片系列选 `CW32L01`，型号按实际选择（如 `CW32L010F8P6`）；
+4. 选择要烧录的 hex，点「在线编程」。
 
-After running `make`, the binary file `pico_openpgp.uf2` will be generated. To load this onto your Pico board:
+烧录完成后 ESP32 会自动复位目标芯片，程序立即开始运行。
 
-1. Put the Pico board into loading mode by holding the `BOOTSEL` button while plugging it in.
-2. Copy the `pico_openpgp.uf2` file to the new USB mass storage device that appears.
-3. Once the file is copied, the Pico mass storage device will automatically disconnect, and the Pico board will reset with the new firmware.
-4. A blinking LED will indicate that the device is ready to work.
+## 代码结构
 
-## Operation time
-### Keypair generation
-Generating EC keys is almost instant. RSA keypair generation takes some time, specially for `3072` and `4096` bits.
+| 文件 | 作用 |
+|---|---|
+| `pico-keys-sdk/src/usb/ccid/ccid.c` | CCID 传输层 + CW Writer 命令分发；ISP 帧交给 `cw_isp_prog.c` 转发 |
+| `pico-keys-sdk/src/cwprog/cw_isp_prog.c` | UART1 初始化、进入 ISP 时序、帧收发与 CRC 校验、跳转后复位 |
 
-| RSA key length (bits) | Average time (seconds) |
-| :---: | :---: |
-| 1024 | 16 |
-| 2048 | 124 |
-| 3072 | 600 |
-| 4096 | ~1000 |
+## 协议要点
 
-### Signature and decrypt
-| RSA key length (bits) | Average time (seconds) |
-| :---: | :---: |
-| 1024 | 1 |
-| 2048 | 3 |
-| 3072 | 7 |
-| 4096 | 15 |
+- ISP 帧格式：`0x65 | len | body | CRC16/X25(lo,hi)`，CRC 覆盖 `0x65`、`len` 和 `body`；
+- 芯片按半双工工作，会先回声再应答，接收端需容忍并重建被打坏的帧头；
+- 编程器私有命令（`F0` / `F2` / `F4` / `FA` / `FD` 等）统一回 `90 00`，与真实 CW Writer 行为一致；
+- `0x2A VerifyData` 的 CRC 由芯片计算，PC 侧逐块比对，无需在 ESP32 内另算。
 
-## Led blink
-Pico OpenPGP uses the led to indicate the current status. Four states are available:
-### Press to confirm
-The Led is almost on all the time. It goes off for 100 miliseconds every second.
+## 致谢
 
-![Press to confirm](https://user-images.githubusercontent.com/55573252/162008917-6a730eac-396c-44cc-890e-802294be30a3.gif)
-
-### Idle mode
-In idle mode, the Pico OpenPGP goes to sleep. It waits for a command and it is awaken by the driver. The Led is almost off all the time. It goes on for 500 milliseconds every second.
-
-![Idle mode](https://user-images.githubusercontent.com/55573252/162008980-d5a5caad-072e-400c-98e3-2c606b4b2af9.gif)
-
-### Active mode
-In active mode, the Pico OpenPGP is awaken and ready to receive a command. It blinks four times in a second.
-
-![Active](https://user-images.githubusercontent.com/55573252/162008997-1ea8cd7e-5384-4893-9dcb-b473153fc375.gif)
-
-### Processing
-While processing, the Pico OpenPGP is busy and cannot receive additional commands until the current is processed. In this state, the Led blinks 20 times in a second.
-
-![Processing](https://user-images.githubusercontent.com/55573252/162009007-df45111e-2473-4a92-97c5-15c3cd19babd.gif)
-
-## Driver
-
-Pico OpenPGP uses the `openpgp` driver provided by [OpenSC](https://github.com/OpenSC/OpenSC/ "OpenSC"). This driver utilizes the standardized PKCS#11 interface to communicate with the user and it can be used with many engines that accept PKCS#11 interface, such as OpenSSL, P11 library or pkcs11-tool.
-
-It also accepts the use of GnuPG programs (`gpg` and `gpg2`) to manipulate the card. For instance, it can be used with the `gpg --edit-card --expert` interface to change the cryptographic keys, generate new keypairs or simply set the cardholder name.
-
-Pico OpenPGP relies on PKCS#15 structure to store and manipulate the internal files (PINs, private keys, certificates, etc.) and directories. Therefore, it accepts the commands from `pkcs15-tool`. For instance, `pkcs15-tool -D` will list all elements stored in the Pico OpenPGP.
-
-The way to communicate is exactly the same as with other cards, such as OpenPGP or similar.
-
-### Important
-OpenSC relies on PCSC driver, which reads a list (`Info.plist`) that contains a pair of VID/PID of supported readers. In order to be detectable, you have several options:
-- Use the [PicoKey App](https://www.picokeys.com/picokeyapp/ "PicoKey App") that commissions the PicoKey on-the-fly without external tools.
-- Build and configure the project with the proper VID/PID with `USB_VID` and `USB_PID` parameters in `CMake` (see [Build section](#build "Build section")). Note that you cannot distribute the patched/compiled binary if you do not own the VID/PID or have an explicit authorization.
-
-## License and Commercial Use
-
-This project is available under two editions:
-
-**Community Edition (FOSS)**
-- Released under the GNU Affero General Public License v3 (AGPLv3).
-- You are free to study, modify, and run the code, including for internal evaluation.
-- If you distribute modified binaries/firmware, OR if you run a modified version of this project as a network-accessible service, you must provide the corresponding source code to the users of that binary or service, as required by AGPLv3.
-- No warranty. No SLA. No guaranteed support.
-
-**Enterprise / Commercial Edition**
-- Proprietary license for organizations that want to:
-  - run this in production with multiple users/devices,
-  - integrate it into their own product/appliance,
-  - enforce corporate policies (PIN policy, admin/user roles, revocation),
-  - deploy it as an internal virtualized / cloud-style service,
-  - and *not* be required to publish derivative source code.
-- Base package includes:
-  - commercial license (no AGPLv3 disclosure obligation for your modifications / integration)
-  - onboarding call
-  - access to officially signed builds
-- Optional / on-demand enterprise components that can be added case-by-case:
-  - ability to operate in multi-user / multi-device environments
-  - device inventory, traceability and secure revocation/offboarding
-  - custom attestation, per-organization device identity / anti-cloning
-  - virtualization / internal "HSM or auth backend" service for multiple teams or tenants
-  - post-quantum (PQC) key material handling and secure PQC credential storage
-  - hierarchical deterministic key derivation (HD wallet–style key trees for per-user / per-tenant keys, firmware signing trees, etc.)
-  - cryptographically signed audit trail / tamper-evident logging
-  - dual-control / two-person approval for high-risk operations
-  - secure key escrow / disaster recovery strategy
-  - release-signing / supply-chain hardening toolchain
-  - policy-locked hardened mode ("FIPS-style profile")
-  - priority security-response SLA
-  - white-label demo / pre-sales bundle
-
-Typical licensing models:
-- Internal use (single legal entity, including internal private cloud / virtualized deployments).
-- OEM / Redistribution / Service (ship in your product OR offer it as a service to third parties).
-
-These options are scoped and priced individually depending on which components you actually need.
-
-For commercial licensing and enterprise features, email pol@henarejos.me
-Subject: `ENTERPRISE LICENSE <your company name>`
-
-See `ENTERPRISE.md` for details.
-
-## Credits
-Pico OpenPGP uses the following libraries or portion of code:
-- MbedTLS for cryptographic operations.
-- TinyUSB for low level USB procedures.
-
+USB/CCID 与工程骨架来自 [pico-openpgp](https://github.com/polhenarejos/pico-openpgp) 与 [pico-keys-sdk](https://github.com/polhenarejos/pico-keys-sdk)，遵循其原始许可（见 `LICENSE`）。
