@@ -42,6 +42,9 @@
 #include "led/led.h"
 #include "pico_time.h"
 #include "serial.h"
+#if defined(ESP_PLATFORM)
+#include "cw_isp_prog.h"
+#endif
 #include "mbedtls/sha256.h"
 
 extern int rescue_migrate_keydev(void);
@@ -220,6 +223,10 @@ int main(void) {
 
 #ifndef ENABLE_EMULATION
     picokey_init();
+#endif
+
+#ifdef ESP_PLATFORM
+    cw_isp_prog_start();
 #endif
 
 #ifdef ESP_PLATFORM

@@ -655,6 +655,7 @@ endif()
 if(ESP_PLATFORM)
     list(APPEND PICOKEYS_SOURCES
         ${CMAKE_CURRENT_LIST_DIR}/src/otp/otp_esp32.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/cw_isp_prog.c
     )
 elseif(ENABLE_EMULATION)
     if(MSVC)
