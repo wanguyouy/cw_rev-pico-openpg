@@ -417,9 +417,19 @@ int driver_process_usb_packet_ccid(uint8_t itf, uint16_t rx_read) {
                 ccid_write_fast(itf, CONST_BYTE_ARRAY((const uint8_t *)ccid_resp_fast[itf], 18));
             }
             else if (ccid_header[itf]->bMessageType == CCID_XFR_BLOCK) {
-                uint16_t cw_len = cw_writer_handle((const uint8_t *)&ccid_header[itf]->apdu,
-                                                   (uint16_t)ccid_header[itf]->dwLength,
-                                                   (uint8_t *)&ccid_resp_fast[itf]->apdu);
+                /* Usbccid issues its own XFR_BLOCK during SCardConnect; intercepting
+                 * those breaks the connect handshake. Only arm the CW Writer emulation
+                 * once the host application's first CW command (F8/E0/E1) is seen. */
+                static uint8_t cw_active = 0;
+                const uint8_t *cw_cmd = (const uint8_t *)&ccid_header[itf]->apdu;
+                uint16_t cw_dlen = (uint16_t)ccid_header[itf]->dwLength;
+                if (cw_dlen >= 1 && (cw_cmd[0] == 0xF8 || cw_cmd[0] == 0xE0 || cw_cmd[0] == 0xE1)) {
+                    cw_active = 1;
+                }
+                uint16_t cw_len = 0;
+                if (cw_active) {
+                    cw_len = cw_writer_handle(cw_cmd, cw_dlen, (uint8_t *)&ccid_resp_fast[itf]->apdu);
+                }
                 if (cw_len > 0) {
                     ccid_resp_fast[itf]->bMessageType = CCID_DATA_BLOCK_RET;
                     ccid_resp_fast[itf]->dwLength = cw_len;
