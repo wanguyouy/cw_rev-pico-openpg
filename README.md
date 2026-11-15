@@ -2,7 +2,7 @@
 
 把 ESP32-S3 做成一个「CW Writer 编程器」：USB 侧伪装成官方编程器（VID `0x0483` / PID `0x3258`，在 CW_Programmer 中显示为 `CW Writer 0`），UART 侧把收到的 CW32 ISP 帧原样转发给真实芯片。
 
-CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写入 / 校验 / 跳转全部发生在真实的 CW32L010 上。
+CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写入 / 校验 / 跳转全部发生在真实的 CW32L010 上。另外提供一路 USB CDC 控制台（`COM10`，115200 8N1），可以直接发单字母命令做诊断。
 
 本项目基于 [pico-openpgp](https://github.com/polhenarejos/pico-openpgp) 的 SDK，保留了其 USB/CCID 框架，替换掉了原有的 OpenPGP 智能卡逻辑。
 
@@ -10,9 +10,14 @@ CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写�
 
 | 功能 | 状态 |
 |---|---|
-| USB 连接、芯片识别（Query） | 可用 |
-| 在线编程（擦除 / 编程 / 校验 / 读保护查询 / 运行） | 可用 |
-| 离线编程（hex 存到 ESP32 后脱机烧录） | 未实现 |
+| USB 连接、芯片识别（`0x10` Query） | 可用，已在真机验证 |
+| 整片擦除（`0x24` ChipErase） | 可用，返回 `0x00` |
+| 写 RAM 助手 + 写 Flash（`0x27` / `0x28`） | 可用，`0x28` 已不再回 `0x93` |
+| 跳转到用户程序（`0x40` Jump） | 可用，返回 `0x00` |
+| 读保护等级查询 / 降级（`0x30`） | 查询可用，实测 `lvl=00` |
+| 在线编程（CW_Programmer 全流程） | 可用 |
+| 离线编程（hex 存到 ESP32 后脱机烧录） | 已实现，烧录序列与 ISP 写入共用，尚未整机回归 |
+| SWD / CMSIS-DAP | **未实现**，详见下文 |
 | OpenPGP 智能卡相关功能 | 上游实现仍在，未改动也未验证 |
 
 ## 接线
@@ -21,23 +26,25 @@ CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写�
 |---|---|---|
 | GPIO4 | PA07 | SWDIO / UART1_RXD |
 | GPIO5 | PA08 | SWCLK / UART1_TXD |
-| GPIO6 | NRST | 复位控制 |
+| GPIO6 | NRST | 复位控制（低有效） |
 | 3V3 | VDD | 目标供电（也可外部供电） |
 | GND | GND | 共地 |
 
 ISP 模式下 PA07/PA08 被 BootLoader 复用为 UART1，异步半双工 8N1，初始 115200 bps。
 
-进入 ISP 的时序：`NRST` 拉低 → PA07 输出 50 kHz 方波 → 释放 `NRST` → 保持时钟 20 ms → 停时钟、切换为 UART。
+进入 ISP 的时序：`NRST` 拉低 → GPIO4 输出 50 kHz 方波 → 释放 `NRST` → 保持时钟 20 ms → 停时钟、切换为 UART。
 
 ## 构建
 
-本工程使用本地 ESP-IDF（5.5.x 验证过），不再依赖云端编译：
+本工程使用本地 ESP-IDF（5.5.x 验证过），不再依赖云端编译。命令都在**仓库根目录**执行：
 
 ```powershell
-. C:\esp\v5.5.5\esp-idf\export.ps1
-idf.py -C <本仓库路径> build
-idf.py -C <本仓库路径> -p COM7 -b 460800 flash
+& C:\esp\v5.5.5\esp-idf\export.ps1
+idf.py build
+idf.py -p COM7 flash
 ```
+
+串口分工：`COM7` 是板载 CH343（烧固件用），`COM10` 是本机 USB CDC（发诊断命令用）。
 
 ## 使用
 
@@ -48,19 +55,67 @@ idf.py -C <本仓库路径> -p COM7 -b 460800 flash
 
 烧录完成后 ESP32 会自动复位目标芯片，程序立即开始运行。
 
+## CDC 诊断命令
+
+向 `COM10` 发一个 ASCII 字符即可（带 `\n` 也行），回复以 `\n` 结尾：
+
+```powershell
+python -c "import serial,time; s=serial.Serial('COM10',115200,timeout=1); time.sleep(0.8); s.write(b'I'); time.sleep(1.5); print(s.read(200))"
+```
+
+| 命令 | 作用 | 正常回复 |
+|---|---|---|
+| `I` | 进 ISP 并发 `0x10` Query | `ISP rc=0 len=25 6500150006…` |
+| `X` | 整片擦除 | `ERASE rc=0 len=5 650100E4` |
+| `Y` | 写一个 32 字节最小镜像（先清 `SYSCTRL_CR2.SWDIO`，再 `B .`） | `PROG base=0 ramfun=0 base2=0 data=0` |
+| `J` | ISP `0x40` 跳转到 `0x00000000`，随后探测 SWD | `JUMP rc=0 len=5 \| SWD …` |
+| `L` / `K` | 读保护等级查询（`0x30`/`0x55`）/ 降级到 Level0 | `LEVEL rc=0 len=7 st=00 lvl=00` |
+| `V` | 目标电压 | `VDD 3300 mV` |
+| `N` | 复位后只读采样 PA07/PA08 | `NRST pins PA07=1 PA08=0` |
+| `G` | 不复位、上下拉采样两个引脚 | `PINS pd=00 pu=11` |
+| `S` | SWD 探测（3/6/12/25 µs 四档 × 三种连接时序） | `SWD 00000000 NOACK ack=7 …` |
+| `M` | SWD 两种映射各试一遍 | `MAP A(IO4/CLK5) … \| B(IO5/CLK4) …` |
+| `W` | 采 SWDIO 上 40 个时钟的裸位流 | `RAW FFFFFFFFFF` |
+| `P` | GPIO4/GPIO5 自环（需把两线从目标上摘下短接） | `LOOP F`（开路时是 `LOOP A`） |
+| `Z` | 普通复位后直接 Query（验证复位是否生效） | `COLD rc=-1`（说明没停在 BootLoader） |
+| `R` / `T` | `0x27` 帧长上限 / RAM 读写小工具 | `RAMFUN 8=0 64=0 128=0` |
+| `Q` | 打印一条被解析的 CWU1 帧 | `CWU1 …` |
+
 ## 代码结构
 
 | 文件 | 作用 |
 |---|---|
 | `pico-keys-sdk/src/usb/ccid/ccid.c` | CCID 传输层 + CW Writer 命令分发；ISP 帧交给 `cw_isp_prog.c` 转发 |
 | `pico-keys-sdk/src/cwprog/cw_isp_prog.c` | UART1 初始化、进入 ISP 时序、帧收发与 CRC 校验、跳转后复位 |
+| `pico-keys-sdk/src/cwprog/cw_offline.c` | 脱机烧录序列（`0x20` → `0x27` → `0x20` → `0x28` → `0x29`） |
+| `pico-keys-sdk/src/cwprog/fw_upload.c` | CDC 控制台与全部诊断命令 |
+| `pico-keys-sdk/src/cwprog/fw_store.c` | 把待烧 hex 存进 ESP32 的 flash 分区 |
+| `pico-keys-sdk/src/cwprog/cw_vdd.c` | 目标供电/复位方式配置 |
+| `pico-keys-sdk/src/ui/` | SSD1306 OLED 状态显示 |
+| `tools/fw_upload.py` | PC 侧上传 hex 与对账脚本 |
 
 ## 协议要点
 
-- ISP 帧格式：`0x65 | len | body | CRC16/X25(lo,hi)`，CRC 覆盖 `0x65`、`len` 和 `body`；
+- ISP 帧格式：`0x65 | len | body | CRC16/X25(lo,hi)`，CRC 覆盖 `0x65`、`len` 和 `body`；`len` 不含 `0x65` 与 CRC；
+- `0x20 SetBaseAddr` 的 body 是 **`0x20` + 2 个保留 `0x00` + 4 字节地址**，即 `len = 7`。少了那两个保留字节，后续写入会一直回 `0x93`（无写权限）；
+- `0x27 WriteRamFun` / `0x28 WriteData` 的 `len = 3 + N`（命令 1 + 偏移 2 + 数据 N），偏移是**相对 BaseAddr** 的；
+- 写 Flash 的正确顺序：`0x20` 设 base=`0x20000800` → `0x27` 上传 144 字节 RAM 助手 → `0x20` 把 base 切回 `0x00000000` → `0x28` 写数据；
 - 芯片按半双工工作，会先回声再应答，接收端需容忍并重建被打坏的帧头；
 - 编程器私有命令（`F0` / `F2` / `F4` / `FA` / `FD` 等）统一回 `90 00`，与真实 CW Writer 行为一致；
 - `0x2A VerifyData` 的 CRC 由芯片计算，PC 侧逐块比对，无需在 ESP32 内另算。
+
+## 关于 SWD
+
+`swd.c` 里有一套完整的位操作 SWD（56 时钟线复位 → `0xE79E` JTAG-to-SWD → 线复位 → 读 `0xA5` DPIDR），但真机上**始终读不到 ACK**：`ack=7`、`RAW` 全 1，说明目标完全没有驱动 SWDIO。已排除的因素：
+
+- 读保护 `lvl=00`，不是 Level2 锁死；
+- 目标彻底断电重上电后仍然 `ack=7`，不是上电时序；
+- `SYSCTRL_CR2.SWDIO`（`0x4000_4008` bit1）会把 PA07/PA08 切成 GPIO；ISP BootLoader 正是靠它让位给 UART1。已经用写进 Flash 的程序把这一位清零、再 Jump 执行，仍然无应答；
+- ESP32 侧焊盘正常：`pad=1010`、`pd=00 pu=11`，上拉/下拉都能读回来。
+
+另外逆向过官方的 `CW_Programmer_V2.2.6.exe`（.NET，混淆 + 字符串加密）：它自己**不含 SWD 协议实现**，只有一条芯片配置项 `ISP_Interface_Swd`。也就是说官方软件在 CW32L010 上走的一直是「SWD 引脚上的 UART ISP」，而不是 SWD 调试协议。
+
+所以：要烧录，ISP 这条路已经通了；要让 Keil 认芯片，得自己实现 CMSIS-DAP，卡点仍是上面那个 `ack=7`，下一步需要先做硬件侧确认（`P` 自环 / 示波器看 GPIO5 到 PA08 有没有波形）。
 
 ## 致谢
 
