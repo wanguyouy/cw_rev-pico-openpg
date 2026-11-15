@@ -109,7 +109,11 @@ extern "C" {
 #define CFG_TUD_VENDOR_TX_BUFSIZE 2048
 
 //------------- CLASS -------------//
+#ifdef USB_ITF_CDC
+#define CFG_TUD_CDC               1
+#else
 #define CFG_TUD_CDC               0
+#endif
 #define CFG_TUD_MSC               0
 #ifdef USB_ITF_HID
 #define CFG_TUD_HID               2
@@ -129,8 +133,8 @@ extern "C" {
 // HID buffer size Should be sufficient to hold ID (if any) + Data
 #define CFG_TUD_HID_EP_BUFSIZE    64
 // CDC FIFO size of TX and RX
-#define CFG_TUD_CDC_RX_BUFSIZE   (TUD_OPT_HIGH_SPEED ? 512 : 64)
-#define CFG_TUD_CDC_TX_BUFSIZE   (TUD_OPT_HIGH_SPEED ? 512 : 64)
+#define CFG_TUD_CDC_RX_BUFSIZE   1024
+#define CFG_TUD_CDC_TX_BUFSIZE   256
 
 // CDC Endpoint transfer buffer size, more is faster
 #define CFG_TUD_CDC_EP_BUFSIZE   (TUD_OPT_HIGH_SPEED ? 512 : 64)

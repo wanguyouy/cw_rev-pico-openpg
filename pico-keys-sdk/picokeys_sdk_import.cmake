@@ -139,6 +139,10 @@ if(USB_ITF_LWIP)
     add_compile_definitions(USB_ITF_LWIP=1)
     message(STATUS "USB LWIP Interface:\t\t enabled")
 endif()
+if(USB_ITF_CDC)
+    add_compile_definitions(USB_ITF_CDC=1)
+    message(STATUS "USB CDC Interface:\t\t enabled")
+endif()
 if(ESP_PLATFORM)
     add_compile_definitions(MBEDTLS_AES_ALT=1)
     add_compile_definitions(MBEDTLS_GCM_ALT=1)
@@ -656,6 +660,13 @@ if(ESP_PLATFORM)
     list(APPEND PICOKEYS_SOURCES
         ${CMAKE_CURRENT_LIST_DIR}/src/otp/otp_esp32.c
         ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/cw_isp_prog.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/fw_store.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/fw_upload.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/cw_offline.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/cw_vdd.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/swd.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/ui/ssd1306.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/ui/ui_display.c
     )
 elseif(ENABLE_EMULATION)
     if(MSVC)

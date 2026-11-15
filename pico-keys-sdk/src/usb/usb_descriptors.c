@@ -94,6 +94,9 @@ enum {
 #ifdef USB_ITF_LWIP
     + TUD_CDC_NCM_DESC_LEN
 #endif
+#ifdef USB_ITF_CDC
+    + TUD_CDC_DESC_LEN
+#endif
 )
 };
 
@@ -123,6 +126,10 @@ enum
 #ifdef USB_ITF_LWIP
     EPNUM_LWIP_NOTIF,
     EPNUM_LWIP,
+#endif
+#ifdef USB_ITF_CDC
+    EPNUM_CDC_NOTIF,
+    EPNUM_CDC,
 #endif
     EPNUM_TOTAL
 };
@@ -203,6 +210,14 @@ void usb_desc_setup(void) {
         const uint8_t desc_lwip[] = { TUD_CDC_NCM_DESCRIPTOR(ITF_LWIP, ITF_LWIP + 5, 4, EPNUM_LWIP_NOTIF | TUSB_DIR_IN_MASK, 64, EPNUM_LWIP, EPNUM_LWIP | TUSB_DIR_IN_MASK, CFG_TUD_NET_ENDPOINT_SIZE, CFG_TUD_NET_MTU) };
         memcpy(p, desc_lwip, sizeof(desc_lwip));
         p += sizeof(desc_lwip);
+    }
+#endif
+#ifdef USB_ITF_CDC
+    if (ITF_CDC != ITF_INVALID) {
+        TUSB_DESC_TOTAL_LEN += TUD_CDC_DESC_LEN;
+        const uint8_t desc_cdc[] = { TUD_CDC_DESCRIPTOR(ITF_CDC, 0, EPNUM_CDC_NOTIF | TUSB_DIR_IN_MASK, 8, EPNUM_CDC, EPNUM_CDC | TUSB_DIR_IN_MASK, 64) };
+        memcpy(p, desc_cdc, sizeof(desc_cdc));
+        p += sizeof(desc_cdc);
     }
 #endif
     desc_config[2] = TUSB_DESC_TOTAL_LEN & 0xFF;

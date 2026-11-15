@@ -44,6 +44,11 @@
 #include "serial.h"
 #if defined(ESP_PLATFORM)
 #include "cw_isp_prog.h"
+#include "cw_offline.h"
+#include "cw_vdd.h"
+#include "fw_store.h"
+#include "fw_upload.h"
+#include "ui_display.h"
 #endif
 #include "mbedtls/sha256.h"
 
@@ -138,6 +143,11 @@ static void core0_loop(void *arg) {
         hwrng_task();
         flash_task();
         button_task();
+#ifdef ESP_PLATFORM
+        ui_task();
+        fw_upload_task();
+        cw_offline_task();
+#endif
 #ifdef PICO_PLATFORM
         // Avoid a pure busy loop on core0; gives the system a scheduling hint.
         tight_loop_contents();
@@ -227,6 +237,15 @@ int main(void) {
 
 #ifdef ESP_PLATFORM
     cw_isp_prog_start();
+    fw_store_init();
+    ui_init();
+    cw_vdd_init();
+    ui_set_file(fw_store_valid() ? fw_store_name() : "NONE");
+    if (fw_store_valid()) {
+        char crc[24];
+        snprintf(crc, sizeof(crc), "CRC 0X%08X", (unsigned)fw_store_auth());
+        ui_set_status(crc);
+    }
 #endif
 
 #ifdef ESP_PLATFORM

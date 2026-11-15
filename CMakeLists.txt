@@ -49,6 +49,7 @@ endif()
 
 set(USB_ITF_CCID 1)
 set(USB_ITF_WCID 1)
+set(USB_ITF_CDC 1)
 set(ENABLE_LIBCVC 1)
 include(pico-keys-sdk/picokeys_sdk_import.cmake)
 SET_BUILD_NUMBER("${CMAKE_CURRENT_LIST_DIR}")

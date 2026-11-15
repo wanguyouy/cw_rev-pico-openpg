@@ -32,6 +32,9 @@
 #include "apdu.h"
 #include "usb.h"
 #include "cw_isp_prog.h"
+#include "cw_vdd.h"
+#include "fw_store.h"
+#include "ui_display.h"
 
 #if MAX_RES_APDU_DATA_SIZE > MAX_CMD_APDU_DATA_SIZE
 #define USB_BUF_SIZE (MAX_RES_APDU_DATA_SIZE + 20 + 9)
@@ -340,9 +343,14 @@ static uint16_t cw_writer_handle(const uint8_t *cmd, uint16_t len, uint8_t *resp
     }
     cla = cmd[0];
     if (cla != 0x65) {
-        printf("[ccid] %02X len=%u:", cla, (unsigned)len);
-        for (unsigned i = 0; i < len && i < 12; i++)
+        unsigned lim = len < 24 ? len : 24;
+        printf("[cw] %02X %02X %02X %02X len=%u |", cla, len > 1 ? cmd[1] : 0,
+               len > 2 ? cmd[2] : 0, len > 3 ? cmd[3] : 0, (unsigned)len);
+        for (unsigned i = 4; i < lim; i++)
             printf(" %02X", cmd[i]);
+        printf(" | ");
+        for (unsigned i = 4; i < lim; i++)
+            printf("%c", (cmd[i] >= 0x20 && cmd[i] < 0x7f) ? cmd[i] : '.');
         printf("\n");
     }
     if (cla == 0xF8) {
@@ -370,14 +378,39 @@ static uint16_t cw_writer_handle(const uint8_t *cmd, uint16_t len, uint8_t *resp
         else if (ins == 0x28 && len >= 4 && cmd[2] == 0xff) {
             if (cmd[3] == 0x00) {
                 uint16_t nl = (uint16_t)(len - 4);
-                if (nl > sizeof(proj_name)) {
-                    nl = sizeof(proj_name);
+                if (nl > sizeof(proj_name) - 1) {
+                    nl = sizeof(proj_name) - 1;
                 }
                 memcpy(proj_name, cmd + 4, nl);
+                proj_name[nl] = '\0';
                 proj_name_len = (uint8_t)nl;
             }
             else if (cmd[3] == 0x01 && len >= 8) {
                 memcpy(proj_size, cmd + 4, 4);
+            }
+        }
+        else if (ins == 0x28 && len >= 6 && cmd[2] == 0x65) {
+            /* Offline download: the tool replays the online ISP script, one
+             * frame per APDU, encoded as E0 28 <frame[0]> <frame[1]> <rest>.
+             * Only 0x28 WriteData frames carry image bytes; the rest of the
+             * script (erase, helper, verify, jump) is replayed by cw_offline. */
+            const uint8_t *body = cmd + 4;
+            unsigned blen = (unsigned)len - 4;
+            if (body[0] == 0x28 && blen >= 5) {
+                unsigned off = (unsigned)body[1] | ((unsigned)body[2] << 8);
+                unsigned cnt = blen - 3 - 2; /* strip trailing CRC16 */
+                if (off == 0) {
+                    fw_store_dl_begin();
+                }
+                if (fw_store_dl_chunk(off, body + 3, cnt) != 0) {
+                    printf("[cw] dl chunk failed off=%04X n=%u\n", off, cnt);
+                }
+            }
+            else if (body[0] == 0x40) {
+                if (fw_store_dl_finish((const char *)proj_name) == 0) {
+                    ui_set_file(fw_store_name());
+                    ui_set_status("FW READY");
+                }
             }
         }
         resp[0] = 0x90; resp[1] = 0x00;
@@ -403,7 +436,23 @@ static uint16_t cw_writer_handle(const uint8_t *cmd, uint16_t len, uint8_t *resp
     if (cla == 0x65) {
         return cw_isp_handle(cmd, len, resp);
     }
-    if (cla == 0xF3 || cla == 0xF5 || cla == 0xF6 || cla == 0xFA) {
+    if (cla == 0xF5) {
+        /* F5 <mode> <supply> <reset>: the tool's
+         * "编程器供电3.3V/5.0V/目标自供电 + SWD/上电/RST复位" selector.
+         * supply: 0=3.3V 1=5.0V 2=target powered, reset: 0=SWD 1=power 2=NRST */
+        if (len >= 4 && cmd[2] <= CW_VDD_5V && cmd[3] <= CW_RST_NRST) {
+            cw_vdd_configure((cw_vdd_t)cmd[2], (cw_reset_t)cmd[3]);
+        }
+        else if (len >= 4) {
+            printf("[cw] F5 unknown setting: %02X %02X\n", cmd[2], cmd[3]);
+        }
+        if (len >= 2 && (cmd[1] == 1 || cmd[1] == 2)) {
+            ui_set_mode(cmd[1] == 2 ? UI_MODE_SWD : UI_MODE_ISP);
+        }
+        resp[0] = 0x90; resp[1] = 0x00;
+        return 2;
+    }
+    if (cla == 0xF3 || cla == 0xF6 || cla == 0xFA) {
         resp[0] = 0x90; resp[1] = 0x00;
         return 2;
     }

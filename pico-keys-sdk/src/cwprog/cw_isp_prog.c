@@ -31,12 +31,17 @@
 #include "driver/uart.h"
 #include "esp_rom_gpio.h"
 #include "soc/gpio_sig_map.h"
+#include "soc/gpio_struct.h"
 
 #include "cw_isp_prog.h"
+#include "cw_vdd.h"
+#include "ui_display.h"
 
 #define CW_PIN_TX   GPIO_NUM_4
 #define CW_PIN_RX   GPIO_NUM_5
 #define CW_PIN_NRST GPIO_NUM_6
+#define CW_PIN_DIR1 GPIO_NUM_15 /* U1: GPIO4 <-> PA07 */
+#define CW_PIN_DIR2 GPIO_NUM_16 /* U2: GPIO5 <-> PA08 */
 
 #define CW_UART UART_NUM_1
 #define CW_BAUD 115200
@@ -45,6 +50,38 @@
 
 static int cw_link_up;
 static int cw_target_in_isp;
+static uint32_t cw_written_bytes;
+
+/* Mirror the running ISP command on the OLED.  Only the state is written
+ * here: ui_task() does the (slow) I2C transfer on the main loop. */
+static void ui_report_cmd(uint8_t cmd, uint16_t txlen) {
+    char text[22];
+    switch (cmd) {
+    case 0x24:
+        cw_written_bytes = 0;
+        ui_set_status("ERASING");
+        break;
+    case 0x26:
+        ui_set_status("SECTOR ERASE");
+        break;
+    case 0x28:
+        if (txlen > 9)
+            cw_written_bytes += (uint32_t)(txlen - 9);
+        snprintf(text, sizeof(text), "WRITE %lu.%luK",
+                 (unsigned long)(cw_written_bytes / 1024),
+                 (unsigned long)((cw_written_bytes % 1024) * 10 / 1024));
+        ui_set_status(text);
+        break;
+    case 0x2A:
+        ui_set_status("VERIFYING");
+        break;
+    case 0x40:
+        ui_set_status("RESET");
+        break;
+    default:
+        break;
+    }
+}
 
 static uint16_t crc16_x25(const uint8_t *d, size_t n) {
     uint16_t crc = 0xFFFF;
@@ -158,6 +195,19 @@ static void cw_hw_init(void) {
     gpio_config(&io);
     gpio_set_level(CW_PIN_NRST, 1);
 
+    /* 74LVC1T45 方向：ISP 时 PA07 线为 TX(高)、PA08 线为 RX(低)。
+     * 这两脚悬空会让 SWCLK 方向不确定，导致 SWD 完全收不到时钟。 */
+    gpio_config_t dir = {
+        .pin_bit_mask = (1ULL << CW_PIN_DIR1) | (1ULL << CW_PIN_DIR2),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&dir);
+    gpio_set_level(CW_PIN_DIR1, 1);
+    gpio_set_level(CW_PIN_DIR2, 0);
+
     ledc_timer_config_t tcfg = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_1_BIT,
@@ -203,14 +253,34 @@ static void cw_clock_on(void) {
                                     false, false);
 }
 
-/* Stop the clock and hand the pad back to UART1 TX. */
+/* 把 PA07/PA08 两个焊盘交回 UART1（TX/RX）。 */
+static void cw_uart_restore(void) {
+    uart_set_pin(CW_UART, CW_PIN_TX, CW_PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    /* uart_set_pin() 只置 FUN_IE，不会关掉 RX 脚之前的输出使能；SWD 把
+     * GPIO5 当 SWCLK 推挽输出过，这里必须手工放开，否则目标 TXD 被拉死。 */
+    GPIO.enable_w1ts = 1u << CW_PIN_TX;
+    GPIO.enable_w1tc = 1u << CW_PIN_RX;
+    /* 复位两路电平转换方向（SWD 可能把它们留在别的状态） */
+    gpio_set_level(CW_PIN_DIR1, 1);
+    gpio_set_level(CW_PIN_DIR2, 0);
+}
+
 static void cw_clock_off(void) {
     ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 1); /* idle high */
-    uart_set_pin(CW_UART, CW_PIN_TX, CW_PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    cw_uart_restore();
 }
 
 /* Keep the chip in reset, feed 50 kHz into PA07, then release reset. */
 static void cw_isp_entry(void) {
+    /* 按工具的"供电/复位方式"准备目标 */
+    cw_vdd_apply();
+    if (cw_vdd_reset_mode() == CW_RST_POWER && cw_vdd_configured() != CW_VDD_OFF &&
+        !cw_vdd_external()) {
+        cw_vdd_set(CW_VDD_OFF);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        cw_vdd_apply();
+    }
+
     gpio_set_level(CW_PIN_NRST, 0);
     vTaskDelay(pdMS_TO_TICKS(5));
 
@@ -254,12 +324,51 @@ static int cw_enter(void) {
             memcpy(name, body + 5, len);
             name[len] = '\0';
             printf("[cwisp] target in ISP: %s\n", name);
+            ui_set_chip(name);
+            ui_set_status("ISP OK");
             cw_target_in_isp = 1;
             return 0;
         }
     }
     printf("[cwisp] no answer from target: check wiring (3V3/GND/PA07/PA08/NRST)\n");
+    ui_set_status("NO TARGET");
     return -1;
+}
+
+/* 只做一次普通复位（不灌 50kHz），然后直接发 ISP 查询。
+ * 用来判断"复位后芯片是不是还停在 BootLoader 里"——若仍应答，
+ * 说明空片会一直留在 ISP，SWD 自然拿不到。 */
+int cw_isp_query_cold(uint8_t *rx, uint16_t rxcap, uint16_t *rxlen) {
+    uint8_t body[64];
+    uint16_t n = 0;
+    uint8_t q[5] = {0x65, 0x01, 0x10, 0x00, 0x00};
+
+    if (!cw_link_up) {
+        cw_hw_init();
+        cw_link_up = 1;
+    }
+    cw_frame_crc(q, 1);
+
+    gpio_set_level(CW_PIN_NRST, 0);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    gpio_set_level(CW_PIN_NRST, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    cw_uart_restore();
+    cw_write(q, sizeof(q));
+    if (cw_read_frame(body, &n, 600, 0) != 0) {
+        cw_target_in_isp = 0;
+        return -1;
+    }
+    if ((uint16_t)(n + 4u) > rxcap) {
+        return -1;
+    }
+    rx[0] = 0x65;
+    rx[1] = (uint8_t)n;
+    memcpy(rx + 2, body, n);
+    cw_frame_crc(rx, n);
+    *rxlen = (uint16_t)(n + 4u);
+    return 0;
 }
 
 int cw_isp_link_xfer(const uint8_t *tx, uint16_t txlen, uint8_t *rx, uint16_t rxcap,
@@ -295,6 +404,7 @@ int cw_isp_link_xfer(const uint8_t *tx, uint16_t txlen, uint8_t *rx, uint16_t rx
         if (!cw_target_in_isp && cw_enter() != 0)
             return -1;
 
+        ui_report_cmd(cmd, txlen);
         cw_write((uint8_t *)tx, txlen);
         n = 0;
         if (cw_read_frame(body, &n, timeout, expect) == 0) {
@@ -306,8 +416,13 @@ int cw_isp_link_xfer(const uint8_t *tx, uint16_t txlen, uint8_t *rx, uint16_t rx
             cw_frame_crc(rx, n);
             *rxlen = (uint16_t)(n + 4u);
 
-            if (cmd == 0x40) { /* Jump: let the new firmware start from a reset */
+            if (cmd == 0x24)
+                ui_set_status("ERASED");
+            else if (cmd == 0x2A)
+                ui_set_status("VERIFY DONE");
+            else if (cmd == 0x40) { /* Jump: let the new firmware start from a reset */
                 cw_target_in_isp = 0;
+                ui_set_status("RUNNING");
                 gpio_set_level(CW_PIN_NRST, 0);
                 vTaskDelay(pdMS_TO_TICKS(10));
                 gpio_set_level(CW_PIN_NRST, 1);
@@ -318,6 +433,7 @@ int cw_isp_link_xfer(const uint8_t *tx, uint16_t txlen, uint8_t *rx, uint16_t rx
     }
 
     printf("[cwisp] cmd %02X: target did not answer\n", cmd);
+    ui_set_status("ERROR");
     return -1;
 }
 
