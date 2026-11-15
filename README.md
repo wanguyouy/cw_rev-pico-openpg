@@ -17,15 +17,14 @@ CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写�
 | 读保护等级查询 / 降级（`0x30`） | 查询可用，实测 `lvl=00` |
 | 在线编程（CW_Programmer 全流程） | 可用 |
 | 离线编程（hex 存到 ESP32 后脱机烧录） | 已实现，烧录序列与 ISP 写入共用，尚未整机回归 |
-| SWD / CMSIS-DAP | **未实现**，详见下文 |
 | OpenPGP 智能卡相关功能 | 上游实现仍在，未改动也未验证 |
 
 ## 接线
 
 | ESP32-S3 | CW32L010 | 说明 |
 |---|---|---|
-| GPIO4 | PA07 | SWDIO / UART1_RXD |
-| GPIO5 | PA08 | SWCLK / UART1_TXD |
+| GPIO4 | PA07 | UART1_RXD（ISP 复用） |
+| GPIO5 | PA08 | UART1_TXD（ISP 复用） |
 | GPIO6 | NRST | 复位控制（低有效） |
 | 3V3 | VDD | 目标供电（也可外部供电） |
 | GND | GND | 共地 |
@@ -67,16 +66,12 @@ python -c "import serial,time; s=serial.Serial('COM10',115200,timeout=1); time.s
 |---|---|---|
 | `I` | 进 ISP 并发 `0x10` Query | `ISP rc=0 len=25 6500150006…` |
 | `X` | 整片擦除 | `ERASE rc=0 len=5 650100E4` |
-| `Y` | 写一个 32 字节最小镜像（先清 `SYSCTRL_CR2.SWDIO`，再 `B .`） | `PROG base=0 ramfun=0 base2=0 data=0` |
-| `J` | ISP `0x40` 跳转到 `0x00000000`，随后探测 SWD | `JUMP rc=0 len=5 \| SWD …` |
+| `Y` | 写一个 32 字节最小镜像（死循环），验证 `0x28` 写权限 | `PROG base=0 ramfun=0 base2=0 data=0` |
+| `J` | ISP `0x40` 跳转到 `0x00000000` | `JUMP rc=0 len=5` |
 | `L` / `K` | 读保护等级查询（`0x30`/`0x55`）/ 降级到 Level0 | `LEVEL rc=0 len=7 st=00 lvl=00` |
 | `V` | 目标电压 | `VDD 3300 mV` |
 | `N` | 复位后只读采样 PA07/PA08 | `NRST pins PA07=1 PA08=0` |
 | `G` | 不复位、上下拉采样两个引脚 | `PINS pd=00 pu=11` |
-| `S` | SWD 探测（3/6/12/25 µs 四档 × 三种连接时序） | `SWD 00000000 NOACK ack=7 …` |
-| `M` | SWD 两种映射各试一遍 | `MAP A(IO4/CLK5) … \| B(IO5/CLK4) …` |
-| `W` | 采 SWDIO 上 40 个时钟的裸位流 | `RAW FFFFFFFFFF` |
-| `P` | GPIO4/GPIO5 自环（需把两线从目标上摘下短接） | `LOOP F`（开路时是 `LOOP A`） |
 | `Z` | 普通复位后直接 Query（验证复位是否生效） | `COLD rc=-1`（说明没停在 BootLoader） |
 | `R` / `T` | `0x27` 帧长上限 / RAM 读写小工具 | `RAMFUN 8=0 64=0 128=0` |
 | `Q` | 打印一条被解析的 CWU1 帧 | `CWU1 …` |
@@ -103,19 +98,6 @@ python -c "import serial,time; s=serial.Serial('COM10',115200,timeout=1); time.s
 - 芯片按半双工工作，会先回声再应答，接收端需容忍并重建被打坏的帧头；
 - 编程器私有命令（`F0` / `F2` / `F4` / `FA` / `FD` 等）统一回 `90 00`，与真实 CW Writer 行为一致；
 - `0x2A VerifyData` 的 CRC 由芯片计算，PC 侧逐块比对，无需在 ESP32 内另算。
-
-## 关于 SWD
-
-`swd.c` 里有一套完整的位操作 SWD（56 时钟线复位 → `0xE79E` JTAG-to-SWD → 线复位 → 读 `0xA5` DPIDR），但真机上**始终读不到 ACK**：`ack=7`、`RAW` 全 1，说明目标完全没有驱动 SWDIO。已排除的因素：
-
-- 读保护 `lvl=00`，不是 Level2 锁死；
-- 目标彻底断电重上电后仍然 `ack=7`，不是上电时序；
-- `SYSCTRL_CR2.SWDIO`（`0x4000_4008` bit1）会把 PA07/PA08 切成 GPIO；ISP BootLoader 正是靠它让位给 UART1。已经用写进 Flash 的程序把这一位清零、再 Jump 执行，仍然无应答；
-- ESP32 侧焊盘正常：`pad=1010`、`pd=00 pu=11`，上拉/下拉都能读回来。
-
-另外逆向过官方的 `CW_Programmer_V2.2.6.exe`（.NET，混淆 + 字符串加密）：它自己**不含 SWD 协议实现**，只有一条芯片配置项 `ISP_Interface_Swd`。也就是说官方软件在 CW32L010 上走的一直是「SWD 引脚上的 UART ISP」，而不是 SWD 调试协议。
-
-所以：要烧录，ISP 这条路已经通了；要让 Keil 认芯片，得自己实现 CMSIS-DAP，卡点仍是上面那个 `ack=7`，下一步需要先做硬件侧确认（`P` 自环 / 示波器看 GPIO5 到 PA08 有没有波形）。
 
 ## 致谢
 
