@@ -97,8 +97,33 @@ enum {
 #ifdef USB_ITF_CDC
     + TUD_CDC_DESC_LEN
 #endif
+#ifdef USB_ITF_DAP
+    + TUD_HID_INOUT_DESC_LEN
+#endif
 )
 };
+
+#ifdef USB_ITF_DAP
+/* CMSIS-DAP v1: vendor page 0xFF00, 64-byte input/output/feature. */
+uint8_t const desc_dap_report[] = {
+    0x06, 0x00, 0xFF, /* Usage Page (Vendor Defined) */
+    0x09, 0x01,       /* Usage (1) */
+    0xA1, 0x01,       /* Collection (Application) */
+    0x15, 0x00,       /* Logical Minimum (0) */
+    0x26, 0xFF, 0x00, /* Logical Maximum (255) */
+    0x75, 0x08,       /* Report Size (8) */
+    0x95, 0x40,       /* Report Count (64) */
+    0x09, 0x01,
+    0x81, 0x02,       /* Input (Data,Var,Abs) */
+    0x95, 0x40,
+    0x09, 0x01,
+    0x91, 0x02,       /* Output (Data,Var,Abs) */
+    0x95, 0x40,
+    0x09, 0x01,
+    0xB1, 0x02,       /* Feature (Data,Var,Abs) */
+    0xC0
+};
+#endif
 
 #ifdef USB_ITF_HID
 uint8_t const desc_hid_report[] = {
@@ -117,7 +142,12 @@ enum
 #if TUSB_SMARTCARD_CCID_EPS == 3
     EPNUM_CCID_INT,
 #endif
+#ifdef USB_ITF_WCID
     EPNUM_WCID,
+#endif
+#endif
+#ifdef USB_ITF_DAP
+    EPNUM_DAP,
 #endif
 #ifdef USB_ITF_HID
     EPNUM_HID,
@@ -159,15 +189,23 @@ uint8_t desc_config[MAX_TUSB_DESC_TOTAL_LEN] = {
     TUD_CONFIG_DESCRIPTOR(1, 0, 0, 0, USB_CONFIG_ATT_ONE | TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, MAX_USB_POWER)
 };
 
-#ifdef USB_ITF_HID
+#if defined(USB_ITF_HID) || defined(USB_ITF_DAP)
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t itf) {
     printf("report_cb %d\n", itf);
+#ifdef USB_ITF_HID
     if (itf == ITF_HID_CTAP) {
         return desc_hid_report;
     }
     else if (itf == ITF_HID_KB) {
         return desc_hid_report_kb;
     }
+#endif
+#ifdef USB_ITF_DAP
+    /* The argument is the HID instance index, not the interface number:
+     * this build has exactly one HID interface, so it is always the DAP. */
+    (void)itf;
+    return desc_dap_report;
+#endif
     return NULL;
 }
 #endif
@@ -197,12 +235,14 @@ void usb_desc_setup(void) {
         memcpy(p, desc_ccid, sizeof(desc_ccid));
         p += sizeof(desc_ccid);
     }
+#ifdef USB_ITF_WCID
     if (ITF_WCID != ITF_INVALID) {
         TUSB_DESC_TOTAL_LEN += TUSB_SMARTCARD_WCID_DESC_LEN;
         const uint8_t desc_wcid[] = { TUD_SMARTCARD_DESCRIPTOR_WEB(ITF_WCID, ITF_WCID + 5, EPNUM_WCID, TUSB_DIR_IN_MASK | EPNUM_WCID, 64) };
         memcpy(p, desc_wcid, sizeof(desc_wcid));
         p += sizeof(desc_wcid);
     }
+#endif
 #endif
 #ifdef USB_ITF_LWIP
     if (ITF_LWIP != ITF_INVALID) {
@@ -218,6 +258,16 @@ void usb_desc_setup(void) {
         const uint8_t desc_cdc[] = { TUD_CDC_DESCRIPTOR(ITF_CDC, 0, EPNUM_CDC_NOTIF | TUSB_DIR_IN_MASK, 8, EPNUM_CDC, EPNUM_CDC | TUSB_DIR_IN_MASK, 64) };
         memcpy(p, desc_cdc, sizeof(desc_cdc));
         p += sizeof(desc_cdc);
+    }
+#endif
+#ifdef USB_ITF_DAP
+    if (ITF_DAP != ITF_INVALID) {
+        TUSB_DESC_TOTAL_LEN += TUD_HID_INOUT_DESC_LEN;
+        /* iInterface 5 is the "Writer" string: the ESP string table is capped
+         * at 8 entries, so ITF_DAP + 5 (8) would be out of range. */
+        const uint8_t desc_dap[] = { TUD_HID_INOUT_DESCRIPTOR(ITF_DAP, 5, HID_ITF_PROTOCOL_NONE, sizeof(desc_dap_report), EPNUM_DAP, (uint8_t)TUSB_DIR_IN_MASK | EPNUM_DAP, CFG_TUD_HID_EP_BUFSIZE, 1) };
+        memcpy(p, desc_dap, sizeof(desc_dap));
+        p += sizeof(desc_dap);
     }
 #endif
     desc_config[2] = TUSB_DESC_TOTAL_LEN & 0xFF;

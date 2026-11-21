@@ -70,6 +70,9 @@ pthread_t hcore0, hcore1;
 #ifdef USB_ITF_CDC
     uint8_t ITF_CDC = ITF_INVALID;
 #endif
+#ifdef USB_ITF_DAP
+    uint8_t ITF_DAP = ITF_INVALID;
+#endif
 uint8_t ITF_TOTAL = 0;
 
 void usb_set_timeout_counter(uint8_t itf, uint32_t v) {
@@ -141,6 +144,7 @@ void usb_init(void)
         string_desc_itf[ITF_TOTAL - 1] = string_desc_arr[8];
 #endif
     }
+#ifdef USB_ITF_WCID
     if (enabled_usb_itf & PHY_USB_ITF_WCID) {
         ITF_SC_WCID = ITF_SC_TOTAL++;
         ITF_WCID = ITF_TOTAL++;
@@ -148,6 +152,7 @@ void usb_init(void)
         string_desc_itf[ITF_TOTAL - 1] = string_desc_arr[9];
 #endif
     }
+#endif
 #endif
 #ifdef USB_ITF_LWIP
     if (enabled_usb_itf & PHY_USB_ITF_LWIP) {
@@ -162,6 +167,9 @@ void usb_init(void)
     /* CDC ACM uses two interfaces: communication + data. */
     ITF_CDC = ITF_TOTAL;
     ITF_TOTAL += 2;
+#endif
+#ifdef USB_ITF_DAP
+    ITF_DAP = ITF_TOTAL++;
 #endif
     card_locked_itf = ITF_TOTAL;
     if (timeout_counter == NULL) {

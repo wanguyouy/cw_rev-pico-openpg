@@ -115,8 +115,10 @@ extern "C" {
 #define CFG_TUD_CDC               0
 #endif
 #define CFG_TUD_MSC               0
-#ifdef USB_ITF_HID
+#if defined(USB_ITF_HID)
 #define CFG_TUD_HID               2
+#elif defined(USB_ITF_DAP)
+#define CFG_TUD_HID               1
 #else
 #define CFG_TUD_HID               0
 #endif

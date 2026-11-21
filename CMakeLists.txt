@@ -48,8 +48,15 @@ else()
 endif()
 
 set(USB_ITF_CCID 1)
-set(USB_ITF_WCID 1)
 set(USB_ITF_CDC 1)
+if(ESP_PLATFORM)
+    # ESP32-S3 only has 5 IN endpoints in total: CCID + CMSIS-DAP HID + CDC
+    # leave no room for the WebUSB/WebCCID interface.
+    set(USB_ITF_WCID 0)
+    set(USB_ITF_DAP 1)
+else()
+    set(USB_ITF_WCID 1)
+endif()
 set(ENABLE_LIBCVC 1)
 include(pico-keys-sdk/picokeys_sdk_import.cmake)
 SET_BUILD_NUMBER("${CMAKE_CURRENT_LIST_DIR}")

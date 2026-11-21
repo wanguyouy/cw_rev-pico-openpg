@@ -270,6 +270,36 @@ static void cw_clock_off(void) {
     cw_uart_restore();
 }
 
+/* ---------- SWD pad hand-off ---------- */
+
+static bool cw_pads_held_by_swd;
+
+/* CMSIS-DAP took GPIO4/5/6 over: stop the ISP clock and keep the ISP link
+ * off these pads until the debugger disconnects. */
+void cw_isp_pads_hold_for_swd(void) {
+    if (cw_pads_held_by_swd) {
+        return;
+    }
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 1);
+    cw_pads_held_by_swd = true;
+    cw_target_in_isp = 0;
+    printf("[cwisp] pads handed to SWD\n");
+}
+
+void cw_isp_pads_release_from_swd(void) {
+    if (!cw_pads_held_by_swd) {
+        return;
+    }
+    cw_pads_held_by_swd = false;
+    cw_uart_restore();
+    cw_target_in_isp = 0;
+    printf("[cwisp] pads back on UART1\n");
+}
+
+bool cw_isp_pads_held(void) {
+    return cw_pads_held_by_swd;
+}
+
 /* Keep the chip in reset, feed 50 kHz into PA07, then release reset. */
 static void cw_isp_entry(void) {
     /* 按工具的"供电/复位方式"准备目标 */
@@ -343,6 +373,9 @@ int cw_isp_query_cold(uint8_t *rx, uint16_t rxcap, uint16_t *rxlen) {
     uint16_t n = 0;
     uint8_t q[5] = {0x65, 0x01, 0x10, 0x00, 0x00};
 
+    if (cw_pads_held_by_swd) {
+        return -1;
+    }
     if (!cw_link_up) {
         cw_hw_init();
         cw_link_up = 1;
@@ -379,6 +412,11 @@ int cw_isp_link_xfer(const uint8_t *tx, uint16_t txlen, uint8_t *rx, uint16_t rx
     uint8_t blen = (txlen > 1) ? tx[1] : 0;
     int expect;
     uint32_t timeout;
+
+    if (cw_pads_held_by_swd) {
+        printf("[cwisp] SWD owns PA07/PA08, ISP refused\n");
+        return -1;
+    }
 
     switch (cmd) {
     case 0x10: expect = 0; timeout = 800; break;

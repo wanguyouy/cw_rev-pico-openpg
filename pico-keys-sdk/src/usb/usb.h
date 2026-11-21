@@ -77,6 +77,9 @@ enum { ITF_INVALID = 0xFF };
 #ifdef USB_ITF_CDC
     extern uint8_t ITF_CDC;
 #endif
+#ifdef USB_ITF_DAP
+    extern uint8_t ITF_DAP;
+#endif
 
 extern uint8_t ITF_TOTAL;
 

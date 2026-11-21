@@ -143,6 +143,10 @@ if(USB_ITF_CDC)
     add_compile_definitions(USB_ITF_CDC=1)
     message(STATUS "USB CDC Interface:\t\t enabled")
 endif()
+if(USB_ITF_DAP)
+    add_compile_definitions(USB_ITF_DAP=1)
+    message(STATUS "USB DAP Interface:\t\t enabled")
+endif()
 if(ESP_PLATFORM)
     add_compile_definitions(MBEDTLS_AES_ALT=1)
     add_compile_definitions(MBEDTLS_GCM_ALT=1)
@@ -665,6 +669,8 @@ if(ESP_PLATFORM)
         ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/cw_offline.c
         ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/cw_vdd.c
         ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/swd.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/swd_dap.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/cwprog/dap_hid.c
         ${CMAKE_CURRENT_LIST_DIR}/src/ui/ssd1306.c
         ${CMAKE_CURRENT_LIST_DIR}/src/ui/ui_display.c
     )
