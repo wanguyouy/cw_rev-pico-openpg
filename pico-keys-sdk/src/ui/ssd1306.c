@@ -123,7 +123,17 @@ static bool open_bus(int sda, int scl, uint8_t addr) {
     if (i2c_new_master_bus(&bus_cfg, &bus) != ESP_OK) {
         return false;
     }
-    if (i2c_master_probe(bus, addr, 50) != ESP_OK) {
+    /* The first transaction after the bus is created times out on this board
+     * (the lines need a moment to settle with the weak internal pull-ups),
+     * so probe the address a few times before declaring it absent. */
+    bool acked = false;
+    for (int i = 0; i < 5 && !acked; i++) {
+        if (i) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        acked = i2c_master_probe(bus, addr, 20) == ESP_OK;
+    }
+    if (!acked) {
         i2c_del_master_bus(bus);
         return false;
     }
@@ -176,13 +186,20 @@ void ssd1306_init(void) {
     /* VDD has to settle before the controller accepts commands. */
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    /* Address first, then swapped data/clock lines for wiring mistakes. */
+    /* Address first, then swapped data/clock lines for wiring mistakes.  The
+     * controller NACKs for tens of ms after VDD comes up, so sweep the
+     * combinations a few times instead of giving up on the first pass. */
     static const uint8_t addrs[2] = {SSD1306_I2C_ADDR, SSD1306_I2C_ADDR_ALT};
-    for (int attempt = 0; attempt < 4; attempt++) {
-        int sda = (attempt < 2) ? SSD1306_SDA_GPIO : SSD1306_SCL_GPIO;
-        int scl = (attempt < 2) ? SSD1306_SCL_GPIO : SSD1306_SDA_GPIO;
-        if (open_bus(sda, scl, addrs[attempt & 1])) {
-            break;
+    for (int round = 0; round < 4 && s_dev == NULL; round++) {
+        for (int attempt = 0; attempt < 4; attempt++) {
+            int sda = (attempt < 2) ? SSD1306_SDA_GPIO : SSD1306_SCL_GPIO;
+            int scl = (attempt < 2) ? SSD1306_SCL_GPIO : SSD1306_SDA_GPIO;
+            if (open_bus(sda, scl, addrs[attempt & 1])) {
+                break;
+            }
+        }
+        if (s_dev == NULL) {
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
     if (s_dev == NULL) {
