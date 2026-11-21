@@ -272,17 +272,14 @@ void usb_desc_setup(void) {
 #endif
     desc_config[2] = TUSB_DESC_TOTAL_LEN & 0xFF;
     desc_config[3] = TUSB_DESC_TOTAL_LEN >> 8;
-    printf("[cw] desc total=%u itf=%u
-", (unsigned)TUSB_DESC_TOTAL_LEN, (unsigned)ITF_TOTAL);
+    printf("[cw] desc total=%u itf=%u\n", (unsigned)TUSB_DESC_TOTAL_LEN, (unsigned)ITF_TOTAL);
     for (uint16_t i = 0; i < TUSB_DESC_TOTAL_LEN; i++) {
         printf("%02x", desc_config[i]);
         if ((i & 31) == 31) {
-            printf("
-");
+            printf("\n");
         }
     }
-    printf("
-");
+    printf("\n");
 }
 
 #ifndef ESP_PLATFORM
