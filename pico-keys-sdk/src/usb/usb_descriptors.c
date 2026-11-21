@@ -412,6 +412,15 @@ uint8_t const *tud_descriptor_bos_cb(void) {
 
 #endif
 
+#ifndef USB_ITF_WCID
+/* bcdUSB is 0x0210, so Windows requires BOS even with no capability to
+ * advertise (WCID/WebUSB is dropped in the DAP build). */
+static uint8_t const desc_bos_empty[] = { TUD_BOS_DESCRIPTOR(TUD_BOS_DESC_LEN, 0) };
+uint8_t const *tud_descriptor_bos_cb(void) {
+    return desc_bos_empty;
+}
+#endif
+
 //--------------------------------------------------------------------+
 // String Descriptors
 //--------------------------------------------------------------------+
