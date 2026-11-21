@@ -700,6 +700,7 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
     //vendord_open expects a CLASS_VENDOR interface class
     uint16_t const drv_len = sizeof(tusb_desc_interface_t) + sizeof(struct ccid_class_descriptor) + TUSB_SMARTCARD_CCID_EPS * sizeof(tusb_desc_endpoint_t);
     memcpy(itf_vendor, itf_desc, sizeof(uint8_t) * max_len);
+    printf("[cw] ccid_open itf=%u max_len=%u\n", (unsigned)itf_desc->bInterfaceNumber, (unsigned)max_len);
     ((tusb_desc_interface_t *) itf_vendor)->bInterfaceClass = TUSB_CLASS_VENDOR_SPECIFIC;
 #if TUSB_SMARTCARD_CCID_EPS == 3
     ((tusb_desc_interface_t *) itf_vendor)->bNumEndpoints -= 1;
@@ -720,7 +721,7 @@ static uint16_t ccid_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
     usbd_edpt_xfer(rhport, desc_ep->bEndpointAddress, msg, sizeof(msg), sizeof(msg));
 #endif
 #else
-    vendord_open(rhport, (tusb_desc_interface_t *)itf_vendor, max_len);
+    printf("[cw] ccid_open vend ret=%u\n", (unsigned)vendord_open(rhport, (tusb_desc_interface_t *)itf_vendor, max_len));
 #endif
     free(itf_vendor);
 

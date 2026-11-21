@@ -33,6 +33,14 @@
 #include "emulation.h"
 #endif
 
+/* Bring-up instrumentation: report where enumeration stops. */
+#ifdef ESP_PLATFORM
+void tud_mount_cb(void) { printf("[cw] usb configured\n"); }
+void tud_umount_cb(void) { printf("[cw] usb unconfigured\n"); }
+void tud_suspend_cb(bool rw) { (void)rw; printf("[cw] usb suspend\n"); }
+void tud_resume_cb(void) { printf("[cw] usb resume\n"); }
+#endif
+
 // Device specific functions
 static uint32_t *timeout_counter = NULL;
 static uint8_t card_locked_itf = 0; // no locked
