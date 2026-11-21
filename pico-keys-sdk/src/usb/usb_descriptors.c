@@ -197,7 +197,6 @@ uint8_t desc_config[MAX_TUSB_DESC_TOTAL_LEN] = {
 
 #if defined(USB_ITF_HID) || defined(USB_ITF_DAP)
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t itf) {
-    printf("report_cb %d\n", itf);
 #ifdef USB_ITF_HID
     if (itf == ITF_HID_CTAP) {
         return desc_hid_report;
@@ -278,14 +277,6 @@ void usb_desc_setup(void) {
 #endif
     desc_config[2] = TUSB_DESC_TOTAL_LEN & 0xFF;
     desc_config[3] = TUSB_DESC_TOTAL_LEN >> 8;
-    printf("[cw] desc total=%u itf=%u\n", (unsigned)TUSB_DESC_TOTAL_LEN, (unsigned)ITF_TOTAL);
-    for (uint16_t i = 0; i < TUSB_DESC_TOTAL_LEN; i++) {
-        printf("%02x", desc_config[i]);
-        if ((i & 31) == 31) {
-            printf("\n");
-        }
-    }
-    printf("\n");
 }
 
 #ifndef ESP_PLATFORM
