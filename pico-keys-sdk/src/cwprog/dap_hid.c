@@ -224,7 +224,7 @@ static uint32_t dap_transfer(const uint8_t *request, uint8_t *response) {
     response += 2;
     transfer_abort = false;
 
-    request++; /* DAP index */
+    request += 2; /* command, DAP index */
     total = *request++;
 
     for (count = total; count != 0; count--) {
