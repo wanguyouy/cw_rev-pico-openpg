@@ -10,9 +10,9 @@
 #include "swd_dap.h"
 
 #include "driver/ledc.h"
-#include "esp_clk.h"
 #include "esp_cpu.h"
 #include "esp_rom_gpio.h"
+#include "sdkconfig.h"
 #include "soc/gpio_sig_map.h"
 #include "soc/gpio_struct.h"
 #include "soc/io_mux_reg.h"
@@ -22,6 +22,10 @@
 #define NRST_PIN 6
 #define DIR_IO   15 /* U1: GPIO4 <-> PA07 */
 #define DIR_CLK  16 /* U2: GPIO5 <-> PA08 */
+
+/* Power management is off in this firmware (CONFIG_PM_ENABLE unset), so the
+ * CPU runs at the Kconfig frequency and the cycle counter follows it. */
+#define CPU_HZ ((uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000000u)
 
 #define CLK_HZ_DEFAULT 1000000u
 #define CLK_HZ_MIN       50000u
@@ -127,7 +131,7 @@ void swd_dap_set_clock(uint32_t hz) {
         hz = CLK_HZ_MAX;
     }
     clock_hz = hz;
-    half_cycles = esp_clk_cpu_freq() / (2 * hz);
+    half_cycles = CPU_HZ / (2 * hz);
     if (half_cycles < HALF_CYCLES_MIN) {
         half_cycles = HALF_CYCLES_MIN;
     }
@@ -209,7 +213,7 @@ int swd_dap_pins(void) {
 }
 
 void swd_dap_delay_us(uint32_t us) {
-    uint32_t cycles = (esp_clk_cpu_freq() / 1000000u) * us;
+    uint32_t cycles = (CPU_HZ / 1000000u) * us;
     uint32_t start = esp_cpu_get_cycle_count();
 
     while ((uint32_t)(esp_cpu_get_cycle_count() - start) < cycles) {
