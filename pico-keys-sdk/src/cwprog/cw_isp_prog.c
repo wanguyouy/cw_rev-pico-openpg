@@ -188,7 +188,10 @@ static void cw_hw_init(void) {
     gpio_config_t io = {
         .pin_bit_mask = 1ULL << CW_PIN_NRST,
         .mode = GPIO_MODE_INPUT_OUTPUT_OD, /* NRST has an external pull-up */
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        /* 内部上拉必须关掉：目标断电时它会经目标 NRST 的 ESD 二极管把
+         * VDD_TGT 充到 2 V 左右，cw_vdd_external() 因此误判目标自供电，
+         * 拒绝打开电源轨，目标一直处在欠压状态（ISP/SWD 都不应答）。 */
+        .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
