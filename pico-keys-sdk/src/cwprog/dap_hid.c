@@ -80,6 +80,7 @@ static uint16_t retry_count = 100;
 static uint16_t match_retry_count;
 static uint32_t match_mask;
 static bool transfer_abort;
+static bool rail_owned;
 
 static inline uint32_t get32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -173,6 +174,17 @@ static uint32_t dap_info(uint8_t id, uint8_t *info) {
     }
 }
 
+/* U1/U2 run from VDD_TGT, so the level shifters are dead while the target
+ * has no supply.  Honour the tool's F5 setting; if it left the rail off and
+ * nothing powers the target, enable 3.3 V for this session. */
+static void dap_power_target(void) {
+    cw_vdd_apply();
+    if (cw_vdd_get() == CW_VDD_OFF && !cw_vdd_external()) {
+        cw_vdd_set(CW_VDD_3V3);
+        rail_owned = cw_vdd_get() != CW_VDD_OFF;
+    }
+}
+
 static uint32_t dap_connect(const uint8_t *request, uint8_t *response) {
     uint8_t port = request[0];
 
@@ -180,10 +192,11 @@ static uint32_t dap_connect(const uint8_t *request, uint8_t *response) {
         port = 1;
     }
     if (port == 1) { /* DAP_PORT_SWD */
+        dap_power_target();
         dap_ensure_pads();
-        cw_vdd_apply();
         debug_port = 1;
-        printf("[dap] connect SWD, %lu Hz\n", (unsigned long)swd_dap_clock());
+        printf("[dap] connect SWD, %lu Hz, target %d mV%s\n", (unsigned long)swd_dap_clock(),
+               cw_vdd_target_mv(), rail_owned ? " (rail on)" : "");
     }
     else {
         port = 0; /* DAP_PORT_DISABLED */
@@ -196,6 +209,10 @@ static uint32_t dap_disconnect(uint8_t *response) {
     debug_port = 0;
     swd_dap_release();
     cw_isp_pads_release_from_swd();
+    if (rail_owned && cw_vdd_configured() == CW_VDD_OFF) {
+        cw_vdd_set(CW_VDD_OFF);
+    }
+    rail_owned = false;
     printf("[dap] disconnect\n");
     *response = DAP_RSP_OK;
     return 1;
