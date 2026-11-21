@@ -32,7 +32,13 @@
 #endif
 
 #if defined(PICO_PLATFORM) || defined(ESP_PLATFORM)
+#ifdef USB_ITF_WCID
+/* BOS carries the WebUSB / MS OS 2.0 capabilities, so 2.1 is honest. */
 #define USB_BCD   0x0210
+#else
+/* No BOS without WCID; Windows rejects a 2.1 device that has none. */
+#define USB_BCD   0x0200
+#endif
 #else
 #define USB_BCD   0x0110
 #endif
@@ -410,15 +416,6 @@ uint8_t const *tud_descriptor_bos_cb(void) {
     return desc_bos;
 }
 
-#endif
-
-#ifndef USB_ITF_WCID
-/* bcdUSB is 0x0210, so Windows requires BOS even with no capability to
- * advertise (WCID/WebUSB is dropped in the DAP build). */
-static uint8_t const desc_bos_empty[] = { TUD_BOS_DESCRIPTOR(TUD_BOS_DESC_LEN, 0) };
-uint8_t const *tud_descriptor_bos_cb(void) {
-    return desc_bos_empty;
-}
 #endif
 
 //--------------------------------------------------------------------+
