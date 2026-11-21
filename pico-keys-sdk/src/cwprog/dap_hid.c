@@ -175,14 +175,21 @@ static uint32_t dap_info(uint8_t id, uint8_t *info) {
 }
 
 /* U1/U2 run from VDD_TGT, so the level shifters are dead while the target
- * has no supply.  Honour the tool's F5 setting; if it left the rail off and
- * nothing powers the target, enable 3.3 V for this session. */
+ * has no supply.  Honour the tool's F5 setting; with no setting there is no
+ * supply choice in the SWD flow, so enable 3.3 V for this session. */
 static void dap_power_target(void) {
+    cw_vdd_t want;
+
     cw_vdd_apply();
-    if (cw_vdd_get() == CW_VDD_OFF && !cw_vdd_external()) {
-        cw_vdd_set(CW_VDD_3V3);
-        rail_owned = cw_vdd_get() != CW_VDD_OFF;
+    if (cw_vdd_get() != CW_VDD_OFF) {
+        return;
     }
+    want = cw_vdd_configured();
+    if (want == CW_VDD_OFF) {
+        want = CW_VDD_3V3;
+    }
+    cw_vdd_force(want);
+    rail_owned = cw_vdd_get() != CW_VDD_OFF;
 }
 
 static uint32_t dap_connect(const uint8_t *request, uint8_t *response) {

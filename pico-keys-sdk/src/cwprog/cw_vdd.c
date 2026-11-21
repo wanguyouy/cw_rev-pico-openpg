@@ -95,14 +95,14 @@ cw_vdd_t cw_vdd_get(void) {
     return vdd;
 }
 
-void cw_vdd_set(cw_vdd_t v) {
+static void vdd_switch(cw_vdd_t v, bool check_external) {
     if (v == CW_VDD_OFF) {
         gpio_set_level(CW_VDD_EN_PIN, 1);
         vdd = CW_VDD_OFF;
         return;
     }
 
-    if (cw_vdd_external()) {
+    if (check_external && cw_vdd_external()) {
         /* 目标已有电源：再供电就是倒灌 */
         gpio_set_level(CW_VDD_EN_PIN, 1);
         vdd = CW_VDD_OFF;
@@ -116,6 +116,16 @@ void cw_vdd_set(cw_vdd_t v) {
     gpio_set_level(CW_VDD_EN_PIN, 0);
     vdd = v;
     vTaskDelay(pdMS_TO_TICKS(CW_VDD_SETTLE_MS));
+}
+
+void cw_vdd_set(cw_vdd_t v) {
+    vdd_switch(v, true);
+}
+
+/* For the SWD path: the level shifters need VDD_TGT, and there is no tool APDU
+ * to pick a supply there.  The rail switches block reverse current. */
+void cw_vdd_force(cw_vdd_t v) {
+    vdd_switch(v, false);
 }
 
 void cw_vdd_configure(cw_vdd_t v, cw_reset_t r) {

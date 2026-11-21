@@ -23,6 +23,8 @@ void cw_vdd_init(void);
 
 /* 立即动作，含倒灌检查（目标已有外部电压时不使能） */
 void cw_vdd_set(cw_vdd_t v);
+/* 不做倒灌检查（SWD 连接时用：电平转换需要 VDD_TGT 才能工作） */
+void cw_vdd_force(cw_vdd_t v);
 cw_vdd_t cw_vdd_get(void);
 
 /* 目标 VDD 引脚电压（mV，已按 1/2 分压还原） */
