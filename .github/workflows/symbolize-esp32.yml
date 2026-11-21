@@ -1,0 +1,42 @@
+name: symbolize-esp32
+
+on:
+  workflow_dispatch:
+    inputs:
+      addrs:
+        description: "Space separated hex addresses for addr2line"
+        default: ""
+      funcs:
+        description: "Comma separated function names to disassemble"
+        default: "app_main"
+
+jobs:
+  sym:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          . /opt/esp/idf/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Symbolize
+        run: |
+          . /opt/esp/idf/export.sh
+          set +e
+          ADDRS="${{ github.event.inputs.addrs }}"
+          FUNCS="${{ github.event.inputs.funcs }}"
+          if [ -n "$ADDRS" ]; then
+            xtensa-esp32s3-elf-addr2line -pfiaC -e build/pico_openpgp.elf $ADDRS
+          fi
+          xtensa-esp32s3-elf-objdump -d --no-show-raw-insn build/pico_openpgp.elf > /tmp/dis.txt
+          IFS=',' read -ra LIST <<< "$FUNCS"
+          for fn in "${LIST[@]}"; do
+            echo "===== $fn ====="
+            awk -v f="<$fn>:" '$0 ~ f {p=1} p {print} p && NF==0 {exit}' /tmp/dis.txt
+          done
