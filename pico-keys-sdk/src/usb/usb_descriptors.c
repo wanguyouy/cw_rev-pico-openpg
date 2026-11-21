@@ -268,9 +268,9 @@ void usb_desc_setup(void) {
 #ifdef USB_ITF_DAP
     if (ITF_DAP != ITF_INVALID) {
         TUSB_DESC_TOTAL_LEN += TUD_HID_INOUT_DESC_LEN;
-        /* iInterface 5 is the "Writer" string: the ESP string table is capped
-         * at 8 entries, so ITF_DAP + 5 (8) would be out of range. */
-        const uint8_t desc_dap[] = { TUD_HID_INOUT_DESCRIPTOR(ITF_DAP, 5, HID_ITF_PROTOCOL_NONE, sizeof(desc_dap_report), EPNUM_DAP, (uint8_t)TUSB_DIR_IN_MASK | EPNUM_DAP, CFG_TUD_HID_EP_BUFSIZE, 1) };
+        /* iInterface 6: the ESP string table only serves indices 0-7, so
+         * ITF_DAP + 5 (8) would be out of range. Slot 6 is set to "CMSIS-DAP". */
+        const uint8_t desc_dap[] = { TUD_HID_INOUT_DESCRIPTOR(ITF_DAP, 6, HID_ITF_PROTOCOL_NONE, sizeof(desc_dap_report), EPNUM_DAP, (uint8_t)TUSB_DIR_IN_MASK | EPNUM_DAP, CFG_TUD_HID_EP_BUFSIZE, 1) };
         memcpy(p, desc_dap, sizeof(desc_dap));
         p += sizeof(desc_dap);
     }
