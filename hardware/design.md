@@ -111,6 +111,8 @@ GPIO35~37 不可用。
    supply 0=3.3V / 1=5.0V / 2=目标自供电，reset 0=SWD / 1=上电 / 2=NRST。
    首次上板时看串口 `[cw] F5 ...` 与 `[cwvdd] tool setting` 两条日志确认编码。
 3. 掉电复位时序：断 VDD 前把 GPIO4/5 拉低、电平转换 B 侧置高阻，再断开电源。
-4. 模式切换：ISP 透传 / SWD（CMSIS-DAP，USB 侧增加 HID 接口组成复合设备）。
+4. ~~模式切换：ISP 透传 / SWD~~ 已实现为 `cwprog/swd_dap.c` + `cwprog/dap_hid.c`，
+   USB 侧 IF3 为 CMSIS-DAP v1 HID，与 CCID 组成复合设备；DAP 连接时接管
+   PA07/PA08，ISP 请求被拒，断开后自动交还 UART1。
 5. 离线烧录：16MB Flash 划出 FATFS 分区存 hex，OLED 选文件，
    复用 `0x24→0x27→0x28→0x2A→0x40` 流程并显示进度。

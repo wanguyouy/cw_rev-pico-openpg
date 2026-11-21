@@ -4,6 +4,8 @@
 
 CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写入 / 校验 / 跳转全部发生在真实的 CW32L010 上。另外提供一路 USB CDC 控制台（`COM10`，115200 8N1），可以直接发单字母命令做诊断。
 
+同一根 USB 线还对外提供一个 CMSIS-DAP v1（HID）接口，Keil / pyOCD 等 CMSIS-DAP 主机可以直接连目标的 SWD 做调试，烧录和调试共用 PA07/PA08/NRST 三个引脚。
+
 本项目基于 [pico-openpgp](https://github.com/polhenarejos/pico-openpgp) 的 SDK，保留了其 USB/CCID 框架，替换掉了原有的 OpenPGP 智能卡逻辑。
 
 ## 状态
@@ -16,6 +18,7 @@ CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写�
 | 跳转到用户程序（`0x40` Jump） | 可用，返回 `0x00` |
 | 读保护等级查询 / 降级（`0x30`） | 查询可用，实测 `lvl=00` |
 | 在线编程（CW_Programmer 全流程） | 可用 |
+| SWD 调试（CMSIS-DAP v1 / HID） | 已实现，云编译通过，待真机联调 |
 | 离线编程（hex 存到 ESP32 后脱机烧录） | 已实现，烧录序列与 ISP 写入共用，尚未整机回归 |
 | OpenPGP 智能卡相关功能 | 上游实现仍在，未改动也未验证 |
 
@@ -33,9 +36,38 @@ ISP 模式下 PA07/PA08 被 BootLoader 复用为 UART1，异步半双工 8N1，�
 
 进入 ISP 的时序：`NRST` 拉低 → GPIO4 输出 50 kHz 方波 → 释放 `NRST` → 保持时钟 20 ms → 停时钟、切换为 UART。
 
+## SWD 调试（CMSIS-DAP）
+
+USB 侧是复合设备：CCID 给 CW_Programmer，一路 CDC 诊断控制台，再加一个
+CMSIS-DAP v1（HID，64 字节报文）。不需要换线，也不需要拔插。
+
+| 接口 | 用途 |
+|---|---|
+| IF0 / CCID | CW Writer 仿真，CW_Programmer 用 |
+| IF1+IF2 / CDC | 诊断控制台（`COM10`） |
+| IF3 / HID | CMSIS-DAP v1，给 Keil / pyOCD 等 |
+
+- 时钟：`DAP_SWJ_Clock` 可设 50 kHz ~ 4 MHz，默认 1 MHz；
+- 命令：`Info`、`Connect`、`Transfer`、`TransferBlock`、`TransferConfigure`、
+  `SWJ_Pins`、`SWJ_Sequence`、`SWD_Sequence`、`ResetTarget`、
+  `DAP_ExecuteCommands` 等都按 DAPLink 的语义实现（响应字节 0 回显命令）；
+- 引脚移交：DAP 连接后接管 PA07/PA08，UART1 释放；此时 CCID 的 ISP 请求被
+  拒绝并回错误。DAP 断开后引脚自动还给 UART1，ISP 恢复；
+- Keil：Debug 选项卡选 `CMSIS-DAP Debugger`，Port 选 SW，Max Clock 填 `1000000`；
+- pyOCD：`pyocd list` 应能看到一个 CMSIS-DAP 探针；先用 `-t cortex_m` 做连通性验证。
+
+注意：ESP32-S3 只有 5 个 IN 端点（含 EP0），CCID + CDC 通知 + CDC 数据 + DAP
+已经占满，所以 ESP32-S3 固件里去掉了 WebUSB/WebCCID 接口。CW_Programmer 走
+PC/SC（CCID），不受影响；以后要用 WebUSB，得拿掉 CDC 控制台换回来。
+
 ## 构建
 
-本工程使用本地 ESP-IDF（5.5.x 验证过），不再依赖云端编译。命令都在**仓库根目录**执行：
+日常用 GitHub Actions 云编译（`.github/workflows/build-esp32s3.yml`）：推送到 `main`
+或手动 `workflow_dispatch`，容器 `espressif/idf:v5.5` 里执行
+`idf.py set-target esp32s3` + `idf.py build`，最后 `esptool.py merge_bin` 出
+`cw_writer_s3.bin`（artifact 名 `cw_writer_s3`）。
+
+本地编译（可选，ESP-IDF 5.5.x，命令都在**仓库根目录**执行）：
 
 ```powershell
 & C:\esp\v5.5.5\esp-idf\export.ps1
@@ -82,6 +114,9 @@ python -c "import serial,time; s=serial.Serial('COM10',115200,timeout=1); time.s
 |---|---|
 | `pico-keys-sdk/src/usb/ccid/ccid.c` | CCID 传输层 + CW Writer 命令分发；ISP 帧交给 `cw_isp_prog.c` 转发 |
 | `pico-keys-sdk/src/cwprog/cw_isp_prog.c` | UART1 初始化、进入 ISP 时序、帧收发与 CRC 校验、跳转后复位 |
+| `pico-keys-sdk/src/cwprog/swd_dap.c` | SWD 底层时序，GPIO 位翻转，对齐 DAPLink SW_DP |
+| `pico-keys-sdk/src/cwprog/dap_hid.c` | CMSIS-DAP v1 命令解析与分发 |
+| `pico-keys-sdk/src/usb/usb_descriptors.c` | USB 描述符（CCID + CDC + HID DAP） |
 | `pico-keys-sdk/src/cwprog/cw_offline.c` | 脱机烧录序列（`0x20` → `0x27` → `0x20` → `0x28` → `0x29`） |
 | `pico-keys-sdk/src/cwprog/fw_upload.c` | CDC 控制台与全部诊断命令 |
 | `pico-keys-sdk/src/cwprog/fw_store.c` | 把待烧 hex 存进 ESP32 的 flash 分区 |
