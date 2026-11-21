@@ -145,8 +145,10 @@ static void core0_loop(void *arg) {
         button_task();
 #ifdef ESP_PLATFORM
         ui_task();
+#ifndef CWW_DAP_ONLY
         fw_upload_task();
         cw_offline_task();
+#endif
 #endif
 #ifdef PICO_PLATFORM
         // Avoid a pure busy loop on core0; gives the system a scheduling hint.
@@ -213,6 +215,9 @@ int main(void) {
     if (phy_data.usb_product_present) {
         tusb_cfg.string_descriptor[2] = phy_data.usb_product;
     }
+#if defined(CWW_DAP_ONLY)
+    tusb_cfg.string_descriptor[2] = "CMSIS-DAP";
+#endif
     static char tmps[5][32];
     const int max_desc_slots = 8 - 6;
     const int itf_desc_count = ITF_TOTAL < max_desc_slots ? ITF_TOTAL : max_desc_slots;
@@ -248,6 +253,10 @@ int main(void) {
 #endif
 
 #ifdef ESP_PLATFORM
+#if defined(CWW_DAP_ONLY)
+    /* No ISP UART, no offline image, no OLED: the DAP owns the pads. */
+    cw_vdd_init();
+#else
     cw_isp_prog_start();
     fw_store_init();
     ui_init();
@@ -258,6 +267,7 @@ int main(void) {
         snprintf(crc, sizeof(crc), "CRC 0X%08X", (unsigned)fw_store_auth());
         ui_set_status(crc);
     }
+#endif
 #endif
 
 #ifdef ESP_PLATFORM

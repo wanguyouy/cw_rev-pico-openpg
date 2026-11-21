@@ -31,6 +31,12 @@ bool swd_dap_claim(void);
 void swd_dap_release(void);
 bool swd_dap_claimed(void);
 
+/* Diagnostic helpers: crossed-wire test, SWDIO release, pad pull control. */
+void swd_dap_set_swapped(bool on);
+bool swd_dap_swapped(void);
+void swd_dap_line_release(void);
+void swd_dap_set_io_pull(int pull);
+
 /* Clock is the SWCLK frequency, clamped to [50 kHz, 4 MHz]. */
 void swd_dap_set_clock(uint32_t hz);
 uint32_t swd_dap_clock(void);
@@ -49,6 +55,11 @@ void swd_dap_swj_sequence(uint32_t count, const uint8_t *data);
 void swd_dap_swd_sequence(uint32_t info, const uint8_t *swdo, uint8_t *swdi);
 
 void swd_dap_line_reset(void);
+/* Line reset, 0xE79E, line reset, idle clocks with SWDIO low. */
+void swd_dap_enter_swd(void);
+
+/* nRESET is released (input, board pull-up) until the host asks for it. */
+void swd_dap_take_nrst(bool own);
 
 /* level 0 asserts nRESET (as cw_isp_entry() and swd.c do). */
 void swd_dap_nreset(int level);

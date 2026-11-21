@@ -91,6 +91,23 @@ bool cw_vdd_external(void) {
     return cw_vdd_target_mv() > CW_VDD_EXT_MV;
 }
 
+int cw_vdd_adc_mv(int channel) {
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    int raw = 0;
+
+    if (adc == NULL) {
+        return -1;
+    }
+    if (adc_oneshot_config_channel(adc, (adc_channel_t)channel, &chan_cfg) != ESP_OK ||
+        adc_oneshot_read(adc, (adc_channel_t)channel, &raw) != ESP_OK) {
+        return -1;
+    }
+    return raw * 3300 / 4095;
+}
+
 cw_vdd_t cw_vdd_get(void) {
     return vdd;
 }

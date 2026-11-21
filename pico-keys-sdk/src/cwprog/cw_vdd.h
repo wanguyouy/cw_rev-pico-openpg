@@ -29,6 +29,8 @@ cw_vdd_t cw_vdd_get(void);
 
 /* 目标 VDD 引脚电压（mV，已按 1/2 分压还原） */
 int cw_vdd_target_mv(void);
+/* ADC1 任意通道的原始电压（mV，未校准；诊断用） */
+int cw_vdd_adc_mv(int channel);
 bool cw_vdd_external(void);
 
 /* 工具下发的连接参数（0xF5） */

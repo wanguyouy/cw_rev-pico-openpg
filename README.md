@@ -4,7 +4,7 @@
 
 CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写入 / 校验 / 跳转全部发生在真实的 CW32L010 上。另外提供一路 USB CDC 控制台（`COM10`，115200 8N1），可以直接发单字母命令做诊断。
 
-同一根 USB 线还对外提供一个 CMSIS-DAP v1（HID）接口，Keil / pyOCD 等 CMSIS-DAP 主机可以直接连目标的 SWD 做调试，烧录和调试共用 PA07/PA08/NRST 三个引脚。
+同一根 USB 线还对外提供一个 CMSIS-DAP v1（HID）接口，Keil / pyOCD 等 CMSIS-DAP 主机可以直接连目标的 SWD 做调试，烧录和调试共用 SWDIO/SWCLK/NRST 三个引脚（CW32L010：PA07/PA08；CIU32F003：PB6/PA2）。
 
 本项目基于 [pico-openpgp](https://github.com/polhenarejos/pico-openpgp) 的 SDK，保留了其 USB/CCID 框架，替换掉了原有的 OpenPGP 智能卡逻辑。
 
@@ -18,7 +18,7 @@ CW_Programmer V2.2.6 认为自己在操作官方烧录器，实际擦除 / 写�
 | 跳转到用户程序（`0x40` Jump） | 可用，返回 `0x00` |
 | 读保护等级查询 / 降级（`0x30`） | 查询可用，实测 `lvl=00` |
 | 在线编程（CW_Programmer 全流程） | 可用 |
-| SWD 调试（CMSIS-DAP v1 / HID） | 已实现，云编译通过，待真机联调 |
+| SWD 调试（CMSIS-DAP v1 / HID） | 可用，Keil 检测/下载与 pyOCD halt/读写已在 CIU32F003 上验证 |
 | 离线编程（hex 存到 ESP32 后脱机烧录） | 已实现，烧录序列与 ISP 写入共用，尚未整机回归 |
 | OpenPGP 智能卡相关功能 | 上游实现仍在，未改动也未验证 |
 
@@ -51,10 +51,12 @@ CMSIS-DAP v1（HID，64 字节报文）。不需要换线，也不需要拔插�
 - 命令：`Info`、`Connect`、`Transfer`、`TransferBlock`、`TransferConfigure`、
   `SWJ_Pins`、`SWJ_Sequence`、`SWD_Sequence`、`ResetTarget`、
   `DAP_ExecuteCommands` 等都按 DAPLink 的语义实现（响应字节 0 回显命令）；
-- 引脚移交：DAP 连接后接管 PA07/PA08，UART1 释放；此时 CCID 的 ISP 请求被
+- 引脚移交：DAP 连接后接管 SWDIO/SWCLK，UART1 释放；此时 CCID 的 ISP 请求被
   拒绝并回错误。DAP 断开后引脚自动还给 UART1，ISP 恢复；
 - Keil：Debug 选项卡选 `CMSIS-DAP Debugger`，Port 选 SW，Max Clock 填 `1000000`；
-- pyOCD：`pyocd list` 应能看到一个 CMSIS-DAP 探针；先用 `-t cortex_m` 做连通性验证。
+- pyOCD：`pyocd list` 应能看到一个 CMSIS-DAP 探针；先用 `-t cortex_m` 做连通性验证；
+- 独立探针固件：`idf.py -B build_dap -D CWW_DAP_ONLY=ON build`，去掉 CCID/ISP/
+  离线/OLED，只留 CMSIS-DAP 和 CDC 控制台。
 
 注意：ESP32-S3 只有 5 个 IN 端点（含 EP0），CCID + CDC 通知 + CDC 数据 + DAP
 已经占满，所以 ESP32-S3 固件里去掉了 WebUSB/WebCCID 接口。CW_Programmer 走

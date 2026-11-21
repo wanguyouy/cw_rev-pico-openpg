@@ -32,7 +32,7 @@
 #define XFER_MISMATCH 0x10
 
 #define DP_RDBUFF 0x0Cu
-#define DP_ABORT  0x0Cu
+#define DP_ABORT  0x00u
 
 enum {
     ID_DAP_INFO = 0x00,
@@ -81,6 +81,7 @@ static uint16_t match_retry_count;
 static uint32_t match_mask;
 static bool transfer_abort;
 static bool rail_owned;
+static uint32_t xfer_errs;
 
 static inline uint32_t get32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -97,14 +98,180 @@ static inline bool rsp_room(const uint8_t *head, const uint8_t *p, uint32_t n) {
     return (size_t)(p - head) + n <= DAP_PACKET;
 }
 
-/* Runs one SWD transfer, retrying WAIT responses like DAPLink does. */
+static int rescue_count;
+
+/* This DP latches STICKYORUN as soon as SWDIO is clocked high, and a line
+ * reset does exactly that.  While STICKYORUN is set every DP write answers
+ * FAULT, which is what kills the tool's power-up and AP writes right after
+ * its own line reset.  ABORT clears it, so clear it after any sequence that
+ * might have clocked SWDIO high. */
+static void dap_dp_clear(void) {
+    uint32_t abort = 0x1E;
+
+    (void)swd_dap_transfer(DP_ABORT, &abort);
+}
+
+#if defined(CWW_DAP_ONLY)
+/* Put the pads back into the SWD pinout.  Cheap and deterministic, so every
+ * attach attempt starts from a known pad state. */
+static void dap_repad(void) {
+    swd_dap_release();
+    swd_dap_claim();
+}
+#endif
+
+#if defined(CWW_DAP_ONLY)
+/* Connect in two steps.  The JTAG-to-SWD select is not idempotent on this
+ * part: sent to a DP that is already in SWD mode it puts the DP back into
+ * JTAG mode and every later request gets NOACK.  So an already-switched DP is
+ * taken with a plain line reset and IDCODE read, and the select is only ever
+ * sent when that probe fails (a fresh chip powers up in JTAG). */
+static bool dap_ensure_swd(uint32_t *id_out) {
+    uint32_t id = 0;
+
+    swd_dap_line_reset();
+    if (swd_dap_transfer(0x02, &id) != SWD_DAP_ACK_OK) {
+        swd_dap_enter_swd();
+        if (swd_dap_transfer(0x02, &id) != SWD_DAP_ACK_OK) {
+            return false;
+        }
+    }
+    /* The line reset that established SWD also latched STICKYORUN. */
+    dap_dp_clear();
+    if (id_out) {
+        *id_out = id;
+    }
+    return true;
+}
+#endif
+
+/* A DP that has lost the request framing stops answering, and after that a
+ * plain line reset only buys a single answered request.  The JTAG-to-SWD
+ * select puts it back for good, so recovery always goes through the select
+ * and requires two answered reads before the session continues. */
+static bool dap_recover_swd(void) {
+    uint32_t id = 0;
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        swd_dap_line_reset();
+        for (int i = 0; i < 8; i++) {
+            if (swd_dap_transfer(0x02, &id) == SWD_DAP_ACK_OK) {
+                break;
+            }
+        }
+        if (swd_dap_transfer(0x02, &id) != SWD_DAP_ACK_OK) {
+            swd_dap_enter_swd();
+            if (swd_dap_transfer(0x02, &id) != SWD_DAP_ACK_OK) {
+                vTaskDelay(1);
+                continue;
+            }
+        }
+        dap_dp_clear();
+        return true;
+    }
+    return false;
+}
+
+#if defined(CWW_DAP_ONLY)
+static bool dap_attach_under_reset(uint32_t *id_out) {
+    uint32_t id = 0;
+    uint32_t hz = swd_dap_clock();
+    bool via_reset = false;
+
+    swd_dap_set_clock(1000000);
+
+    dap_repad();
+    if (dap_ensure_swd(&id)) {
+        printf("[dap] phase1 idcode ok\n");
+        goto attached;
+    }
+    for (int poll = 0; poll < 200; poll++) {
+        if (dap_ensure_swd(&id)) {
+            printf("[dap] phase1 poll %d ok\n", poll);
+            goto attached;
+        }
+    }
+
+    /* The application may remap PA2/PB6 within microseconds of starting, so
+     * release NRST and poll immediately: a few ms of delay is already too
+     * late for that window. */
+    swd_dap_take_nrst(true);
+    via_reset = true;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        dap_repad();
+        swd_dap_nreset(0);
+        swd_dap_delay_us(1500);
+        swd_dap_nreset(1);
+        swd_dap_enter_swd();
+        for (int poll = 0; poll < 2000; poll++) {
+            if (swd_dap_transfer(0x02, &id) == SWD_DAP_ACK_OK) {
+                printf("[dap] idcode in reset attempt %d poll %d\n", attempt, poll);
+                goto attached;
+            }
+        }
+        vTaskDelay(1);
+    }
+    swd_dap_take_nrst(false);
+    swd_dap_set_clock(hz);
+    return false;
+
+attached:
+    swd_dap_set_clock(hz);
+    printf("[dap] attached %s, id=%08lx\n", via_reset ? "after reset" : "live",
+           (unsigned long)id);
+    if (id_out) {
+        *id_out = id;
+    }
+    return true;
+}
+#endif
+
+/* Runs one SWD transfer, retrying WAIT responses like DAPLink does.
+ * A missing target answers with ACK=0b111, which is not one of the
+ * CMSIS-DAP transfer response codes; report it as DAP_TRANSFER_ERROR. */
 static uint8_t swd_xfer_retry(uint8_t rq, uint32_t *data, uint32_t retry) {
     uint8_t ack;
 
     do {
         ack = swd_dap_transfer(rq, data);
-    } while (ack == XFER_WAIT && retry-- && !transfer_abort);
-    return ack;
+    } while (ack == SWD_DAP_ACK_WAIT && retry-- && !transfer_abort);
+
+    if (ack == SWD_DAP_ACK_OK) {
+        rescue_count = 0;
+    }
+    else if (ack == SWD_DAP_ACK_FAULT && debug_port == 1 && rescue_count < 3) {
+        /* A FAULT latches the DP error state and blocks every later write
+         * until ABORT is written. */
+        uint32_t abort = 0x1E;
+
+        rescue_count++;
+        printf("[dap] fault, aborting (of %lu)\n", (unsigned long)rq);
+        if (swd_dap_transfer(DP_ABORT, &abort) == SWD_DAP_ACK_OK) {
+            ack = swd_dap_transfer(rq, data);
+        }
+    }
+    else if (ack != SWD_DAP_ACK_WAIT && debug_port == 1 && rescue_count < 3) {
+        rescue_count++;
+        printf("[dap] ack=%u, recovery (%d)\n", (unsigned)ack, rescue_count);
+        if (dap_recover_swd()) {
+            ack = swd_dap_transfer(rq, data);
+        }
+    }
+
+    switch (ack) {
+        case SWD_DAP_ACK_OK:
+            return XFER_OK;
+        case SWD_DAP_ACK_WAIT:
+            return XFER_WAIT;
+        case SWD_DAP_ACK_FAULT:
+            return XFER_FAULT;
+        default:
+            if (xfer_errs < 6) {
+                printf("[dap] xfer rq=%02X ack=%u\n", (unsigned)rq, (unsigned)ack);
+                xfer_errs++;
+            }
+            return XFER_ERROR;
+    }
 }
 
 static bool dap_ensure_pads(void) {
@@ -148,49 +315,61 @@ static uint32_t dap_info(uint8_t id, uint8_t *info) {
         default: break;
     }
     if (s) {
-        size_t n = strlen(s);
+        /* Len includes the terminating NUL, per the DAP_Info definition. */
+        size_t n = strlen(s) + 1;
 
         if (n > DAP_PACKET - 2) {
             n = DAP_PACKET - 2;
         }
         memcpy(info, s, n);
+        info[n - 1] = 0;
         return (uint32_t)n;
     }
     switch (id) {
-        case DAP_ID_DAP_FW_VER: /* "2.0.0" with terminator, as DAPLink sends */
+        case DAP_ID_DAP_FW_VER: /* protocol version string, NUL included */
             memcpy(info, "2.0.0", 6);
             return 6;
-        case DAP_ID_CAPABILITIES: /* SWD + atomic commands */
-            info[0] = 0x11;
+        case DAP_ID_CAPABILITIES: /* SWD only */
+            /* AtomicCommands (bit 4) is implemented here but its batched
+             * response layout has never been validated against a DAPLink
+             * host, and Keil switches to 0x7F batching as soon as it is
+             * advertised.  Packet Count is 1, so batching buys nothing. */
+            info[0] = 0x01;
             return 1;
         case DAP_ID_PACKET_COUNT:
             info[0] = 1;
             return 1;
-        case DAP_ID_PACKET_SIZE:
+        case DAP_ID_PACKET_SIZE: /* SHORT, little endian */
             info[0] = DAP_PACKET;
-            return 1;
+            info[1] = 0;
+            return 2;
         default:
             return 0;
     }
 }
 
-/* U1/U2 run from VDD_TGT, so the level shifters are dead while the target
- * has no supply.  Honour the tool's F5 setting; with no setting there is no
- * supply choice in the SWD flow, so enable 3.3 V for this session. */
+/* U1/U2 run from VDD_TGT, so the level shifters are dead while that rail is
+ * off.  On boards that do not wire VDD_TGT to the target the sense node
+ * floats, so the external-supply check cannot be trusted here: present 3.3 V
+ * for the SWD session and remember whether the rail is ours. */
 static void dap_power_target(void) {
-    cw_vdd_t want;
-
-    cw_vdd_apply();
-    if (cw_vdd_get() != CW_VDD_OFF) {
-        return;
+    if (cw_vdd_get() != CW_VDD_3V3) {
+        cw_vdd_force(CW_VDD_3V3);
     }
-    want = cw_vdd_configured();
-    if (want == CW_VDD_OFF) {
-        want = CW_VDD_3V3;
-    }
-    cw_vdd_force(want);
     rail_owned = cw_vdd_get() != CW_VDD_OFF;
+    printf("[dap] VDD_TGT rail %s\n", rail_owned ? "3.3V" : "OFF (force failed)");
 }
+
+#if defined(CWW_DAP_ONLY)
+/* Stand-alone probe: grab the target and stop its core. */
+static void dap_probe_target(void) {
+    uint32_t id = 0;
+
+    if (!dap_attach_under_reset(&id)) {
+        printf("[dap] no idcode on the SWD pins\n");
+    }
+}
+#endif
 
 static uint32_t dap_connect(const uint8_t *request, uint8_t *response) {
     uint8_t port = request[0];
@@ -199,8 +378,13 @@ static uint32_t dap_connect(const uint8_t *request, uint8_t *response) {
         port = 1;
     }
     if (port == 1) { /* DAP_PORT_SWD */
+        rescue_count = 0;
         dap_power_target();
         dap_ensure_pads();
+#if defined(CWW_DAP_ONLY)
+        dap_probe_target();
+#endif
+        dap_dp_clear();
         debug_port = 1;
         printf("[dap] connect SWD, %lu Hz, target %d mV%s\n", (unsigned long)swd_dap_clock(),
                cw_vdd_target_mv(), rail_owned ? " (rail on)" : "");
@@ -215,7 +399,9 @@ static uint32_t dap_connect(const uint8_t *request, uint8_t *response) {
 static uint32_t dap_disconnect(uint8_t *response) {
     debug_port = 0;
     swd_dap_release();
+#if !defined(CWW_DAP_ONLY)
     cw_isp_pads_release_from_swd();
+#endif
     if (rail_owned && cw_vdd_configured() == CW_VDD_OFF) {
         cw_vdd_set(CW_VDD_OFF);
     }
@@ -464,14 +650,30 @@ static uint32_t dap_delay(const uint8_t *request, uint8_t *response) {
 }
 
 static uint32_t dap_reset_target(uint8_t *response) {
+    uint32_t id = 0;
+
     dap_ensure_pads();
+    swd_dap_take_nrst(true);
     swd_dap_nreset(0);
     vTaskDelay(pdMS_TO_TICKS(10));
     swd_dap_nreset(1);
+    /* The DP comes back in JTAG mode after a real reset, but on this part a
+     * select sent to a DP that is still in SWD mode pushes it back to JTAG.
+     * Probe first and only select when the probe fails. */
+    if (debug_port == 1) {
+        swd_dap_line_reset();
+        if (swd_dap_transfer(0x02, &id) != SWD_DAP_ACK_OK) {
+            swd_dap_enter_swd();
+            if (swd_dap_transfer(0x02, &id) != SWD_DAP_ACK_OK) {
+                printf("[dap] reset done, no idcode after select\n");
+            }
+        }
+dap_dp_clear();
+    }
     vTaskDelay(pdMS_TO_TICKS(10));
     response[0] = DAP_RSP_OK;
     response[1] = 0; /* no target-specific reset sequence */
-    return 2;
+    return ((uint32_t)1 << 16) | 2;
 }
 
 static uint32_t dap_swj_pins(const uint8_t *request, uint8_t *response) {
@@ -497,8 +699,11 @@ static uint32_t dap_swj_pins(const uint8_t *request, uint8_t *response) {
         }
     }
 
-    *response = (uint8_t)swd_dap_pins();
-    return ((uint32_t)6 << 16) | 1;
+    /* Response is [status][pin state]; the state belongs in byte 1, and a
+     * tools that reads it as the status byte aborts the session. */
+    response[0] = DAP_RSP_OK;
+    response[1] = (uint8_t)swd_dap_pins();
+    return ((uint32_t)6 << 16) | 2;
 }
 
 static uint32_t dap_swj_clock(const uint8_t *request, uint8_t *response) {
@@ -521,8 +726,47 @@ static uint32_t dap_swj_sequence(const uint8_t *request, uint8_t *response) {
     if (count == 0) {
         count = 256;
     }
+    /* The select is not idempotent on this part: repeating it on a DP that is
+     * still in SWD mode pushes it back to JTAG.  Treat the host's select as
+     * "make sure the DP is in SWD": resync with a line reset, read IDCODE, and
+     * only send the select if the probe failed. */
+    if (debug_port == 1 && count == 16 && request[1] == 0x9E && request[2] == 0xE7) {
+        uint32_t id = 0;
+        bool ok = false;
+
+        if (dap_ensure_pads()) {
+            swd_dap_line_reset();
+            /* The first request after a line reset can be missed, and a select
+             * sent to a DP that is already in SWD pushes it back to JTAG, so
+             * only give up after a real poll. */
+            for (int i = 0; i < 8 && !ok; i++) {
+                ok = swd_dap_transfer(0x02, &id) == SWD_DAP_ACK_OK;
+            }
+            if (!ok) {
+                printf("[dap] host select, DP not in SWD, selecting\n");
+                swd_dap_enter_swd();
+                ok = swd_dap_transfer(0x02, &id) == SWD_DAP_ACK_OK;
+                if (!ok) {
+                    printf("[dap] host select, still no idcode\n");
+                    *response = DAP_RSP_ERR;
+                    return ((uint32_t)3 << 16) | 1;
+                }
+            }
+            dap_dp_clear();
+            *response = DAP_RSP_OK;
+        }
+        else {
+            *response = DAP_RSP_ERR;
+        }
+        return ((uint32_t)3 << 16) | 1;
+    }
     if (dap_ensure_pads()) {
         swd_dap_swj_sequence(count, request + 1);
+/* A line reset (all ones) leaves STICKYORUN latched; the tool writes
+         * CTRL/STAT right after it and would get FAULT. */
+        if (debug_port == 1) {
+            dap_dp_clear();
+        }
         *response = DAP_RSP_OK;
     }
     else {
@@ -622,7 +866,7 @@ static uint32_t dap_process(const uint8_t *request, uint8_t *response) {
         case ID_DAP_TRANSFER_ABORT:
             transfer_abort = true;
             *response = DAP_RSP_OK;
-            n = 1;
+            n = ((uint32_t)1 << 16) | 1;
             break;
         case ID_DAP_WRITE_ABORT:
             n = dap_write_abort(request + 1, response);
@@ -687,6 +931,12 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
 
     n = dap_process(req_buf, rsp_buf);
     len = (uint16_t)(n & 0xFFFF);
+    /* Control commands only: a download is thousands of Transfer/TransferBlock
+     * reports and one printf each would stall the session on the UART. */
+    if (req_buf[0] != ID_DAP_TRANSFER && req_buf[0] != ID_DAP_TRANSFER_BLOCK) {
+        printf("[dap] %02X %02X %02X %02X %02X -> %02X\n", req_buf[0], req_buf[1], req_buf[2],
+               req_buf[3], req_buf[4], rsp_buf[1]);
+    }
     if (len > DAP_PACKET) {
         len = DAP_PACKET;
     }

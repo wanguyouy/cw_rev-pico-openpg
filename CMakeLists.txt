@@ -19,6 +19,7 @@ cmake_minimum_required(VERSION 3.13)
 
 option(OPENPGP_TEST_INIT_LEGACY_PIN "Bootstrap legacy PIN/DEK format for migration tests" OFF)
 option(ENABLE_ADMINLESS_MODE "Enable the non-standard Gnuk-compatible admin-less PIN mode" ON)
+option(CWW_DAP_ONLY "Build CMSIS-DAP alone: no CW Writer CCID/ISP/offline paths" OFF)
 
 set(USB_VID 0x2E8A)
 set(USB_PID 0x10FF)
@@ -49,6 +50,12 @@ endif()
 
 set(USB_ITF_CCID 1)
 set(USB_ITF_CDC 1)
+if(CWW_DAP_ONLY)
+    # Standalone probe: the CW Writer CCID interface and its PC/SC polling go
+    # away, leaving CMSIS-DAP plus the CDC console.
+    set(USB_ITF_CCID 0)
+    add_compile_definitions(CWW_DAP_ONLY=1)
+endif()
 if(ESP_PLATFORM)
     # ESP32-S3 only has 5 IN endpoints in total: CCID + CMSIS-DAP HID + CDC
     # leave no room for the WebUSB/WebCCID interface.

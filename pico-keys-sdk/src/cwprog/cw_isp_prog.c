@@ -283,7 +283,9 @@ void cw_isp_pads_hold_for_swd(void) {
     if (cw_pads_held_by_swd) {
         return;
     }
+#if !defined(CWW_DAP_ONLY)
     ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 1);
+#endif
     cw_pads_held_by_swd = true;
     cw_target_in_isp = 0;
     printf("[cwisp] pads handed to SWD\n");
