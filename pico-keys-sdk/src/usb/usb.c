@@ -170,6 +170,9 @@ void usb_init(void)
 #endif
 #ifdef USB_ITF_DAP
     ITF_DAP = ITF_TOTAL++;
+#ifndef ENABLE_EMULATION
+    string_desc_itf[ITF_TOTAL - 1] = string_desc_arr[10];
+#endif
 #endif
     card_locked_itf = ITF_TOTAL;
     if (timeout_counter == NULL) {

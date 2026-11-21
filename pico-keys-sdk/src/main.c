@@ -217,6 +217,9 @@ int main(void) {
     const int max_desc_slots = 8 - 6;
     const int itf_desc_count = ITF_TOTAL < max_desc_slots ? ITF_TOTAL : max_desc_slots;
     for (int i = 0; i < itf_desc_count; i++) {
+        if (string_desc_itf[i] == NULL) {
+            continue;
+        }
         strlcpy(tmps[i], tusb_cfg.string_descriptor[2], sizeof(tmps[0]));
         strlcat(tmps[i], " ", sizeof(tmps[0]));
         strlcat(tmps[i], string_desc_itf[i], sizeof(tmps[0]));

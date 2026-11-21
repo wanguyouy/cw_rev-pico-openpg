@@ -425,6 +425,7 @@ char const *string_desc_arr [] = {
 #endif
     , "WebCCID Interface"
     , "Network Interface"
+    , "CMSIS-DAP Interface"
 };
 
 #ifdef ESP_PLATFORM
