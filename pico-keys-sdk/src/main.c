@@ -213,16 +213,6 @@ int main(void) {
     if (phy_data.usb_product_present) {
         tusb_cfg.string_descriptor[2] = phy_data.usb_product;
     }
-#ifdef USB_ITF_DAP
-    /* Keil's CMSIS-DAP probe scan (CMSIS_DAP.dll) only lists HID devices whose
-     * product string contains "CMSIS-DAP", so the phy name cannot win here. */
-    static char dap_product[40];
-    strlcpy(dap_product, tusb_cfg.string_descriptor[2], sizeof(dap_product));
-    if (strstr(dap_product, "CMSIS-DAP") == NULL) {
-        strlcat(dap_product, " CMSIS-DAP", sizeof(dap_product));
-    }
-    tusb_cfg.string_descriptor[2] = dap_product;
-#endif
     static char tmps[5][32];
     const int max_desc_slots = 8 - 6;
     const int itf_desc_count = ITF_TOTAL < max_desc_slots ? ITF_TOTAL : max_desc_slots;
@@ -236,6 +226,10 @@ int main(void) {
         tusb_cfg.string_descriptor[i+6] = tmps[i];
     }
 #ifdef USB_ITF_DAP
+    /* Windows reports this interface string as the HID product string for a
+     * composite device, and Keil (CMSIS_DAP.dll) rejects any HID probe whose
+     * product string lacks "CMSIS-DAP".  The phy-configured device product
+     * (slot 2) is deliberately left alone so the CCID identity is unchanged. */
     if (ITF_DAP != ITF_INVALID) {
         tusb_cfg.string_descriptor[6] = "CMSIS-DAP";
     }
