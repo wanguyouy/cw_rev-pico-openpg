@@ -25,4 +25,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: cw_writer_s3
-          path: release/cw_writer_s3.bin
+          path: |
+            release/cw_writer_s3.bin
+            build/*.elf
+            build/*.map
